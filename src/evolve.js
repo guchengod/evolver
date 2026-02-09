@@ -91,9 +91,17 @@ function formatSessionLog(jsonlContent) {
           content = JSON.stringify(data.message.content);
         }
 
+        // Capture LLM errors from errorMessage field (e.g. "Unsupported MIME type: image/gif")
+        if (data.message.errorMessage) {
+          const errMsg = typeof data.message.errorMessage === 'string'
+            ? data.message.errorMessage
+            : JSON.stringify(data.message.errorMessage);
+          content = `[LLM ERROR] ${errMsg.replace(/\n+/g, ' ').slice(0, 300)}`;
+        }
+
         // Filter: Skip Heartbeats to save noise
         if (content.trim() === 'HEARTBEAT_OK') continue;
-        if (content.includes('NO_REPLY')) continue;
+        if (content.includes('NO_REPLY') && !data.message.errorMessage) continue;
 
         // Clean up newlines for compact reading
         content = content.replace(/\n+/g, ' ').slice(0, 300);
