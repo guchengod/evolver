@@ -306,11 +306,13 @@ function getMutationDirective(logContent) {
 }
 
 const STATE_FILE = path.join(getEvolutionDir(), 'evolution_state.json');
-// Fix: Look for MEMORY.md in root first, then memory dir to support both layouts
-const ROOT_MEMORY = path.join(REPO_ROOT, 'MEMORY.md');
+// Read MEMORY.md and USER.md from the WORKSPACE root (not the evolver plugin dir).
+// This avoids symlink breakage if the target file is temporarily deleted.
+const WORKSPACE_ROOT = process.env.OPENCLAW_WORKSPACE || path.resolve(REPO_ROOT, '../..');
+const ROOT_MEMORY = path.join(WORKSPACE_ROOT, 'MEMORY.md');
 const DIR_MEMORY = path.join(MEMORY_DIR, 'MEMORY.md');
-const MEMORY_FILE = fs.existsSync(ROOT_MEMORY) ? ROOT_MEMORY : DIR_MEMORY;
-const USER_FILE = path.join(REPO_ROOT, 'USER.md');
+const MEMORY_FILE = fs.existsSync(ROOT_MEMORY) ? ROOT_MEMORY : (fs.existsSync(DIR_MEMORY) ? DIR_MEMORY : ROOT_MEMORY);
+const USER_FILE = path.join(WORKSPACE_ROOT, 'USER.md');
 
 function readMemorySnippet() {
   try {
