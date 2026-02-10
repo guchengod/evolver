@@ -149,7 +149,7 @@ MAJOR.MINOR.PATCH
 - **信号去重**：当最近 8 轮中修复占比 >= 50% 时强制创新（阈值随策略变化）
 - **工具使用分析**：检测日志中的高频工具使用模式（由 Hand Agent 自动进化产出）
 - **源码保护**（GEP Section IX）：核心 .js 文件列为不可修改，防止 Hand Agent 覆写
-- **禁止创新区**（GEP Section X）：防止创建重复的循环管理器、看门狗、技能监控器
+- **禁止创新区**（GEP Section X）：防止创建与已有基础设施重复的技能（进程管理、健康监控、定时任务等）
 - **已知问题清单**（GEP Section VII.6）：告知 LLM 跳过已修复的错误
 - **鲁棒性提升**：MemoryGraph 故障时 `process.exit(2)` 改为 `throw Error()`（循环不再因瞬态错误崩溃）
 - **Gene 限制放宽**：repair max_files 12->20，innovate max_files 8->25

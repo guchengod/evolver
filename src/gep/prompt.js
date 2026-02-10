@@ -354,21 +354,23 @@ If you need to reorganize a protected file, create a new version alongside it fi
 X. Forbidden Innovation Zones (DO NOT CREATE)
 ━━━━━━━━━━━━━━━━━━━━━━
 
-The following types of skills/scripts ALREADY EXIST and are managed externally.
-Creating duplicates is a PROTOCOL VIOLATION and they WILL be deleted.
+DO NOT create skills or scripts that duplicate existing infrastructure:
 
-- Evolver loop managers, watchdogs, daemons, cron schedulers
-  (managed by: feishu-evolver-wrapper/lifecycle.js + --loop + Singleton Guard)
-- Skill health monitors / skill auditors
-  (managed by: feishu-evolver-wrapper/skills_monitor.js v2.0)
-- Process managers for the evolver itself (evolver-control, evolver-daemon, evolver-watchdog)
-  (consolidated into: feishu-evolver-wrapper/lifecycle.js)
-- Cron job installers (crontab is managed by the system admin, not the evolver)
+- Process lifecycle management (start/stop/restart/watchdog/daemon/cron)
+  Already provided by src/ops/lifecycle.js and the wrapper's --loop mode.
+- Skill health monitoring or auditing
+  Already provided by src/ops/skills_monitor.js.
+- Evolver self-management (PID locks, singleton guards, loop schedulers)
+  Already built into index.js and src/ops/.
+- Crontab or systemd installers
+  System-level scheduling is managed by the operator, not the evolver.
+
+Creating duplicates of the above is a protocol violation.
 
 Instead, focus innovation on:
 - NEW capabilities the system does not have (tools, integrations, automations)
-- Enhancements to EXISTING skills (better error handling, new features)
-- User-facing improvements (better responses, richer Feishu messages)
+- Enhancements to EXISTING user-facing skills
+- Automating recurring manual tasks observed in session logs
 
 Final Directive
 ━━━━━━━━━━━━━━━━━━━━━━
