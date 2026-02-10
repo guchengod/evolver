@@ -641,18 +641,14 @@ async function run() {
     recordOutcomeFromState({ signals, observations });
   } catch (e) {
     // If we can't read/write memory graph, refuse to evolve (no "memoryless evolution").
-    console.error(`[MemoryGraph] Outcome write failed: ${e.message}`);
-    console.error(`[MemoryGraph] Refusing to evolve without causal memory. Target: ${memoryGraphPath()}`);
-    process.exit(2);
+    throw new Error(`MemoryGraph Outcome write failed: ${e.message}`);
   }
 
   // Memory Graph: record current signals as a first-class node. If this fails, refuse to evolve.
   try {
     recordSignalSnapshot({ signals, observations });
   } catch (e) {
-    console.error(`[MemoryGraph] Signal snapshot write failed: ${e.message}`);
-    console.error(`[MemoryGraph] Refusing to evolve without causal memory. Target: ${memoryGraphPath()}`);
-    process.exit(2);
+    throw new Error(`MemoryGraph Signal snapshot write failed: ${e.message}`);
   }
 
   // Capability candidates (structured, short): persist and preview.
@@ -733,9 +729,7 @@ async function run() {
   try {
     memoryAdvice = getMemoryAdvice({ signals, genes, driftEnabled: IS_RANDOM_DRIFT });
   } catch (e) {
-    console.error(`[MemoryGraph] Read failed: ${e.message}`);
-    console.error(`[MemoryGraph] Refusing to evolve without causal memory. Target: ${memoryGraphPath()}`);
-    process.exit(2);
+    throw new Error(`MemoryGraph Read failed: ${e.message}`);
   }
 
   const { selectedGene, capsuleCandidates, selector } = selectGeneAndCapsule({

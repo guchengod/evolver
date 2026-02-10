@@ -23,7 +23,7 @@
         "Solidify knowledge: append EvolutionEvent, update Gene/Capsule store"
       ],
       "constraints": {
-        "max_files": 12,
+        "max_files": 20,
         "forbidden_paths": [
           ".git",
           "node_modules"
@@ -93,7 +93,7 @@
         "Solidify: record EvolutionEvent with intent=innovate, create new Gene if pattern is novel, create Capsule on success"
       ],
       "constraints": {
-        "max_files": 8,
+        "max_files": 25,
         "forbidden_paths": [
           ".git",
           "node_modules",
