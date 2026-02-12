@@ -360,17 +360,32 @@ function performMaintenance() {
   try {
     if (!fs.existsSync(AGENT_SESSIONS_DIR)) return;
 
-    // Count files
     const files = fs.readdirSync(AGENT_SESSIONS_DIR).filter(f => f.endsWith('.jsonl'));
-    if (files.length < 100) return; // Limit before cleanup
 
-    console.log(`[Maintenance] Found ${files.length} session logs. Archiving old ones...`);
+    // Clean up evolver's own hand sessions immediately.
+    // These are single-use executor sessions that must not accumulate,
+    // otherwise they pollute the agent's context and starve user conversations.
+    const evolverFiles = files.filter(f => f.startsWith('evolver_hand_'));
+    for (const f of evolverFiles) {
+      try {
+        fs.unlinkSync(path.join(AGENT_SESSIONS_DIR, f));
+      } catch (_) {}
+    }
+    if (evolverFiles.length > 0) {
+      console.log(`[Maintenance] Cleaned ${evolverFiles.length} evolver hand session(s).`);
+    }
+
+    // Archive old non-evolver sessions when count exceeds threshold.
+    const remaining = files.length - evolverFiles.length;
+    if (remaining < 100) return;
+
+    console.log(`[Maintenance] Found ${remaining} session logs. Archiving old ones...`);
 
     const ARCHIVE_DIR = path.join(AGENT_SESSIONS_DIR, 'archive');
     if (!fs.existsSync(ARCHIVE_DIR)) fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
 
-    // Sort by time (oldest first)
     const fileStats = files
+      .filter(f => !f.startsWith('evolver_hand_'))
       .map(f => {
         try {
           return { name: f, time: fs.statSync(path.join(AGENT_SESSIONS_DIR, f)).mtime.getTime() };
@@ -381,7 +396,6 @@ function performMaintenance() {
       .filter(Boolean)
       .sort((a, b) => a.time - b.time);
 
-    // Keep last 50 files, archive the rest
     const toArchive = fileStats.slice(0, fileStats.length - 50);
 
     for (const file of toArchive) {
@@ -389,7 +403,9 @@ function performMaintenance() {
       const newPath = path.join(ARCHIVE_DIR, file.name);
       fs.renameSync(oldPath, newPath);
     }
-    console.log(`[Maintenance] Archived ${toArchive.length} logs to ${ARCHIVE_DIR}`);
+    if (toArchive.length > 0) {
+      console.log(`[Maintenance] Archived ${toArchive.length} logs to ${ARCHIVE_DIR}`);
+    }
   } catch (e) {
     console.error(`[Maintenance] Error: ${e.message}`);
   }
@@ -401,9 +417,35 @@ function sleepMs(ms) {
   return new Promise(resolve => setTimeout(resolve, n));
 }
 
+// Check how many agent sessions are actively being processed (modified in the last N minutes).
+// If the agent is busy with user conversations, evolver should back off.
+function getRecentActiveSessionCount(windowMs) {
+  try {
+    if (!fs.existsSync(AGENT_SESSIONS_DIR)) return 0;
+    const now = Date.now();
+    const w = Number.isFinite(windowMs) ? windowMs : 10 * 60 * 1000;
+    return fs.readdirSync(AGENT_SESSIONS_DIR)
+      .filter(f => f.endsWith('.jsonl') && !f.includes('.lock') && !f.startsWith('evolver_hand_'))
+      .filter(f => {
+        try { return (now - fs.statSync(path.join(AGENT_SESSIONS_DIR, f)).mtimeMs) < w; } catch (_) { return false; }
+      }).length;
+  } catch (_) { return 0; }
+}
+
 async function run() {
   const bridgeEnabled = String(process.env.EVOLVE_BRIDGE || '').toLowerCase() !== 'false';
   const loopMode = ARGS.includes('--loop') || ARGS.includes('--mad-dog') || String(process.env.EVOLVE_LOOP || '').toLowerCase() === 'true';
+
+  // SAFEGUARD: If the agent has too many active user sessions, back off.
+  // Evolver must not starve user conversations by consuming model concurrency.
+  const QUEUE_MAX = Number.parseInt(process.env.EVOLVE_AGENT_QUEUE_MAX || '10', 10);
+  const QUEUE_BACKOFF_MS = Number.parseInt(process.env.EVOLVE_AGENT_QUEUE_BACKOFF_MS || '60000', 10);
+  const activeUserSessions = getRecentActiveSessionCount(10 * 60 * 1000);
+  if (activeUserSessions > QUEUE_MAX) {
+    console.log(`[Evolver] Agent has ${activeUserSessions} active user sessions (max ${QUEUE_MAX}). Backing off ${QUEUE_BACKOFF_MS}ms to avoid starving user conversations.`);
+    await sleepMs(QUEUE_BACKOFF_MS);
+    return;
+  }
 
   // Loop gating: do not start a new cycle until the previous one is solidified.
   // This prevents wrappers from "fast-cycling" the Brain without waiting for the Hand to finish.

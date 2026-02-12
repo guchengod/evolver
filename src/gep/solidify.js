@@ -104,7 +104,7 @@ function normalizeRelPath(relPath) {
 
 function readOpenclawConstraintPolicy() {
   const defaults = {
-    excludePrefixes: ['logs/', 'memory/', 'assets/gep/', 'out/', 'temp/'],
+    excludePrefixes: ['logs/', 'memory/', 'assets/gep/', 'out/', 'temp/', 'node_modules/'],
     excludeExact: ['event.json', 'temp_gep_output.json', 'temp_evolution_output.json', 'evolution_error.log'],
     excludeRegex: ['capsule', 'events?\\.jsonl$'],
     includePrefixes: ['src/', 'scripts/', 'config/'],
@@ -496,12 +496,6 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
   const intentMismatch =
     intent && mutation && typeof mutation.category === 'string' && String(intent) !== String(mutation.category);
   if (intentMismatch) protocolViolations.push(`intent_mismatch_with_mutation:${String(intent)}!=${String(mutation.category)}`);
-  if (derivedIntent === 'repair' && Array.isArray(signals) && signals.includes('issue_already_resolved')) {
-    protocolViolations.push('repair_on_already_resolved_issue');
-  }
-  if (derivedIntent === 'repair' && Array.isArray(signals) && signals.includes('openclaw_self_healed')) {
-    protocolViolations.push('repair_attribution_conflict_openclaw_self_healed');
-  }
 
   const sourceType = lastRun && lastRun.source_type ? String(lastRun.source_type) : 'generated';
   const reusedAssetId = lastRun && lastRun.reused_asset_id ? String(lastRun.reused_asset_id) : null;

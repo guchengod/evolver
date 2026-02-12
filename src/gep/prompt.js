@@ -2,7 +2,6 @@ const { captureEnvFingerprint } = require('./envFingerprint');
 
 /**
  * Build a minimal prompt for direct-reuse mode.
- * Instead of full GEP reasoning, instructs the Hand to apply a known verified solution.
  */
 function buildReusePrompt({ capsule, signals, nowIso }) {
   const payload = capsule.payload || capsule;
@@ -19,64 +18,84 @@ function buildReusePrompt({ capsule, signals, nowIso }) {
 GEP -- REUSE MODE (Search-First) [${nowIso || new Date().toISOString()}]
 
 You are applying a VERIFIED solution from the EvoMap Hub.
-This capsule was published, reviewed, and promoted by the network.
-
-Source asset: ${assetId}
-Source node: ${sourceNode}
-Confidence: ${confidence}
-Gene: ${gene}
+Source asset: ${assetId} (Node: ${sourceNode})
+Confidence: ${confidence} | Gene: ${gene}
 Trigger signals: ${trigger}
 
-Summary:
-${summary}
+Summary: ${summary}
 
 Your signals: ${JSON.stringify(signals || [])}
 
 Instructions:
-1. Read the capsule details below and understand the fix.
-2. Apply the fix to the local codebase, adapting paths and names as needed.
-3. Run validation to confirm the fix works in this environment.
-4. If validation passes, run: node index.js solidify
-5. If it fails, ROLLBACK and report the failure.
+1. Read the capsule details below.
+2. Apply the fix to the local codebase, adapting paths/names.
+3. Run validation to confirm it works.
+4. If passed, run: node index.js solidify
+5. If failed, ROLLBACK and report.
 
 Capsule payload:
 \`\`\`json
 ${JSON.stringify(payload, null, 2)}
 \`\`\`
 
-IMPORTANT: This is a reuse. Do NOT reinvent the solution. Apply it faithfully.
-After solidify, the source_type will be recorded as "reused".
+IMPORTANT: Do NOT reinvent. Apply faithfully.
 `.trim();
 }
 
 /**
- * Build a Hub Matched Solution block to inject into the standard GEP prompt.
- * Used in "reference" reuse mode -- the Brain sees this as a strong hint
- * but can still adapt or override if local context requires it.
+ * Build a Hub Matched Solution block.
  */
 function buildHubMatchedBlock({ capsule }) {
+  if (!capsule) return '(no hub match)';
   const payload = capsule.payload || capsule;
   const summary = payload.summary || capsule.summary || '(no summary)';
   const gene = payload.gene || capsule.gene || '(unknown)';
   const confidence = payload.confidence || capsule.confidence || 0;
   const assetId = capsule.asset_id || '(unknown)';
-  const sourceNode = capsule.source_node_id || '(unknown)';
 
   return `
-Hub Matched Solution (STRONG REFERENCE -- prefer this over inventing from scratch):
-- Asset: ${assetId}
-- Node: ${sourceNode}
-- Confidence: ${confidence}
+Hub Matched Solution (STRONG REFERENCE):
+- Asset: ${assetId} (${confidence})
 - Gene: ${gene}
 - Summary: ${summary}
 - Payload:
 \`\`\`json
 ${JSON.stringify(payload, null, 2)}
 \`\`\`
-If this solution applies to your current signals, USE IT as your primary approach.
-Adapt file paths and variable names to the local codebase, but preserve the core logic.
+Use this as your primary approach if applicable. Adapt to local context.
 `.trim();
 }
+
+/**
+ * Truncate context intelligently to preserve header/footer structure.
+ */
+function truncateContext(text, maxLength = 20000) {
+  if (!text || text.length <= maxLength) return text || '';
+  return text.slice(0, maxLength) + '\n...[TRUNCATED_EXECUTION_CONTEXT]...';
+}
+
+/**
+ * Strict schema definitions for the prompt to reduce drift.
+ * UPDATED: 2026-02-12 (Protocol Drift Fix)
+ */
+const SCHEMA_DEFINITIONS = `
+0. Mutation (The Trigger) - MUST BE FIRST
+   { "type": "Mutation", "id": "mut_<timestamp>", "category": "repair|optimize|innovate", "trigger_signals": ["<signal_string>"], "target": "<module_or_gene_id>", "expected_effect": "<outcome_description>", "risk_level": "low|medium|high" }
+
+1. PersonalityState (The Mood)
+   { "type": "PersonalityState", "rigor": 0.0-1.0, "creativity": 0.0-1.0, "verbosity": 0.0-1.0, "risk_tolerance": 0.0-1.0, "obedience": 0.0-1.0 }
+
+2. EvolutionEvent (The Record)
+   { "type": "EvolutionEvent", "id": "evt_<timestamp>", "parent": <parent_evt_id|null>, "intent": "repair|optimize|innovate", "signals": ["<signal_string>"], "genes_used": ["<gene_id>"], "mutation_id": "<mut_id>", "personality_state": { ... }, "blast_radius": { "files": N, "lines": N }, "outcome": { "status": "success|failed", "score": 0.0-1.0 } }
+
+3. Gene (The Knowledge)
+   - Reuse/update existing ID if possible. Create new only if novel pattern.
+   { "type": "Gene", "id": "gene_<name>", "category": "repair|optimize|innovate", "signals_match": ["<pattern>"], "preconditions": ["<condition>"], "strategy": ["<step_1>"], "constraints": { "max_files": N, "forbidden_paths": [] }, "validation": ["<node_command>"] }
+
+4. Capsule (The Result)
+   - Only on success. Reference Gene used.
+   { "type": "Capsule", "id": "capsule_<timestamp>", "trigger": ["<signal_string>"], "gene": "<gene_id>", "summary": "<one sentence summary>", "confidence": 0.0-1.0, "blast_radius": { "files": N, "lines": N } }
+`.trim();
 
 function buildGepPrompt({
   nowIso,
@@ -91,163 +110,76 @@ function buildGepPrompt({
   capabilityCandidatesPreview,
   externalCandidatesPreview,
   hubMatchedBlock,
+  cycleId,
 }) {
   const parentValue = parentEventId ? `"${parentEventId}"` : 'null';
   const selectedGeneId = selectedGene && selectedGene.id ? selectedGene.id : 'gene_<name>';
   const envFingerprint = captureEnvFingerprint();
+  const cycleLabel = cycleId ? ` Cycle #${cycleId}` : '';
 
-  // Create a minimal context for execution if it's too large
-  let executionContext = context || '';
-  const contextMaxChars = 20000; // Increased context limit
-  if (executionContext.length > contextMaxChars) {
-      executionContext = executionContext.slice(0, contextMaxChars) + '\n...[TRUNCATED_EXECUTION_CONTEXT]...';
+  // Extract strategy from selected gene if available
+  let strategyBlock = "";
+  if (selectedGene && selectedGene.strategy && Array.isArray(selectedGene.strategy)) {
+      strategyBlock = `
+ACTIVE STRATEGY (${selectedGeneId}):
+${selectedGene.strategy.map((s, i) => `${i + 1}. ${s}`).join('\n')}
+ADHERE TO THIS STRATEGY STRICTLY.
+`.trim();
   }
+  
+  // Use intelligent truncation
+  const executionContext = truncateContext(context);
+  
+  // Strict Schema Injection
+  const schemaSection = SCHEMA_DEFINITIONS.replace('<parent_evt_id|null>', parentValue);
 
   const basePrompt = `
-GEP — GENOME EVOLUTION PROTOCOL (v1.9.5 STRICT) [${nowIso}]
+GEP — GENOME EVOLUTION PROTOCOL (v1.10.0 STRICT)${cycleLabel} [${nowIso}]
 
-You are a protocol-bound evolution execution engine.
-Compliance overrides local optimality.
+You are a protocol-bound evolution engine. Compliance overrides optimality.
 
 ━━━━━━━━━━━━━━━━━━━━━━
 I. Mandatory Evolution Object Model (Output EXACTLY these 5 objects)
 ━━━━━━━━━━━━━━━━━━━━━━
 
-Output these 5 objects in valid JSON sequence. Missing any = PROTOCOL FAILURE.
-Do not wrap them in a single array. Output them as separate JSON objects.
-
-0. Mutation (The Trigger)
-{
-  "type": "Mutation",
-  "id": "mut_<timestamp>",
-  "category": "repair | optimize | innovate",
-  "trigger_signals": ${JSON.stringify(signals || [])},
-  "target": "<module | behavior | gene_id>",
-  "expected_effect": "<specific_outcome>",
-  "risk_level": "low | medium | high"
-}
-
-1. PersonalityState (The Mood)
-{
-  "type": "PersonalityState",
-  "rigor": 0.0-1.0,
-  "creativity": 0.0-1.0,
-  "verbosity": 0.0-1.0,
-  "risk_tolerance": 0.0-1.0,
-  "obedience": 0.0-1.0
-}
-
-2. EvolutionEvent (The Record)
-{
-  "type": "EvolutionEvent",
-  "id": "evt_<timestamp>",
-  "parent": ${parentValue},  // MUST link to previous event
-  "intent": "repair | optimize | innovate",
-  "signals": ${JSON.stringify(signals || [])},
-  "genes_used": ["<gene_id>"],
-  "mutation_id": "<mut_id>",
-  "personality_state": { ... },
-  "blast_radius": { "files": N, "lines": N },
-  "outcome": { "status": "success | failed", "score": 0.0-1.0 }
-}
-
-3. Gene (The Knowledge)
-   - Reuse existing ID if updating. Create new ID only if novel.
-   - If using "${selectedGeneId}", output it here with updated strategy.
-{
-  "type": "Gene",
-  "id": "gene_<name>",
-  "category": "repair | optimize | innovate",
-  "signals_match": ["<pattern>"],
-  "preconditions": ["<condition>"],
-  "strategy": ["<step_1>", "<step_2>"],
-  "constraints": { "max_files": N, "forbidden_paths": [] },
-  "validation": ["<check_1>"]
-}
-
-4. Capsule (The Result)
-   - Only on success. MUST reference the Gene used.
-{
-  "type": "Capsule",
-  "id": "capsule_<timestamp>",
-  "trigger": ["<signal>"],
-  "gene": "<gene_id>",
-  "summary": "<one sentence>",
-  "confidence": 0.0-1.0,
-  "blast_radius": { "files": N, "lines": N }
-}
+Output separate JSON objects. DO NOT wrap in a single array. Missing any = PROTOCOL FAILURE.
+${schemaSection}
 
 ━━━━━━━━━━━━━━━━━━━━━━
-II. Execution Flow & Logic
+II. Directives & Logic
 ━━━━━━━━━━━━━━━━━━━━━━
 
-1. Signal Extraction:
-   - Signals are provided in Context. Do not hallucinate new ones.
+1. Intent: Use Selector decision: ${JSON.stringify(selector || {})}
+2. Selection: Selected Gene "${selectedGeneId}".
+${strategyBlock}
 
-2. Intent Determination:
-   - Use Selector decision: ${JSON.stringify(selector || {})}
-   - Innovate (Default): Create new capability or major refactor.
-   - Optimize: Improve existing logic, reduce tokens, speed up.
-   - Repair: Fix broken tool or error.
+3. Execution: Apply changes (tool calls). Repair/Optimize: small/reversible. Innovate: new skills in \`skills/<name>/\`.
+4. Validation: Run gene's validation steps. Fail = ROLLBACK.
+5. Solidify: Output 5 Mandatory Objects. Update Gene/Capsule files.
+6. Report: Use \`feishu-evolver-wrapper/report.js\`. Describe WHAT/WHY.
 
-3. Selection:
-   - Selected Gene: "${selectedGeneId}"
-   - If selected gene exists in "Gene Preview", ADHERE to its strategy.
-   - If signals contain "issue_already_resolved", DO NOT target the same repair objective again.
-     You must switch to a different target (optimize/innovate) and explain the new objective.
-   - If signals contain "openclaw_self_healed", treat it as platform self-recovery.
-     You MUST NOT claim evolver fixed that issue.
+PHILOSOPHY:
+- Automate Patterns: 3+ manual occurrences = tool.
+- Innovate > Maintain: 60% innovation.
+- Robustness: Fix recurring errors permanently.
+- Safety: Never delete protected files (MEMORY.md, SOUL.md).
+- Strictness: NO CHITCHAT. NO MARKDOWN WRAPPERS around JSON if possible.
 
-4. Execution:
-   - Apply changes via tool calls (edit, write, exec).
-   - Repair/Optimize: Small, reversible changes.
-   - Innovate: New skills allowed in \`skills/<name>/\`.
-   - Record blast_radius (files touched, lines changed).
+CONSTRAINTS:
+- No \`exec\` for messaging (use feishu-post/card).
+- \`exec\` for background tasks allowed (log it).
+- New skills -> \`skills/<name>/\`.
+- Modify \`skills/evolver/\` only with rigor > 0.8.
 
-5. Validation:
-   - Run the gene's validation steps.
-   - If validation fails, ROLLBACK.
+COMMON FAILURE PATTERNS (AVOID THESE):
+- Omitted Mutation object (Must be first).
+- Merged objects into one JSON (Must be 5 separate blocks).
+- Hallucinated "type": "Logic" (Only Mutation, PersonalityState, EvolutionEvent, Gene, Capsule).
+- "id": "mut_undefined" (Must generate a timestamp or UUID).
+- Missing "trigger_signals" in Mutation.
+- Gene validation steps must be runnable commands (e.g. node -e "...")
 
-6. Solidify:
-   - Output the 5 Mandatory Objects.
-   - Append EvolutionEvent to history.
-   - Update Gene/Capsule files.
-
-7. Report:
-   - Use \`feishu-evolver-wrapper/report.js\` to announce result.
-   - Describe WHAT changed and WHY.
-   - Never claim "fixed" when the issue was already resolved before this cycle.
-   - Never attribute OpenClaw platform self-heal to evolver.
-
-━━━━━━━━━━━━━━━━━━━━━━
-III. Selector (Mandatory Guidance)
-━━━━━━━━━━━━━━━━━━━━━━
-
-${JSON.stringify(selector, null, 2)}
-
-━━━━━━━━━━━━━━━━━━━━━━
-IV. Evolution Philosophy
-━━━━━━━━━━━━━━━━━━━━━━
-
-1. Automate Patterns: 3+ manual occurrences = build a tool.
-2. Innovate > Maintain: 60% innovation. Build real things.
-3. Robustness: Fix recurring errors permanently (validators, fallbacks).
-4. Safety: Never delete protected files (MEMORY.md, SOUL.md, etc).
-
-━━━━━━━━━━━━━━━━━━━━━━
-V. Tool Constraints
-━━━━━━━━━━━━━━━━━━━━━━
-
-- No \`exec\` for messaging. Use \`feishu-post\` or \`feishu-card\`.
-- \`exec\` usage for background tasks (loops, daemons) is permitted but must be logged.
-- New skills go to \`skills/<name>/\`.
-- Do not modify \`skills/evolver/\` core logic without \`rigor > 0.8\`.
-
-Final Directive
-━━━━━━━━━━━━━━━━━━━━━━
-
-Every cycle must leave the system measurably better.
-Protocol compliance matters, but tangible output matters more.
+Final Directive: Every cycle must leave the system measurably better.
 
 Context [Signals]:
 ${JSON.stringify(signals)}
@@ -265,36 +197,56 @@ Context [Capability Candidates]:
 ${capabilityCandidatesPreview || '(none)'}
 
 Context [Hub Matched Solution]:
-${hubMatchedBlock || '(no hub match for current signals)'}
+${hubMatchedBlock || '(no hub match)'}
 
 Context [External Candidates]:
 ${externalCandidatesPreview || '(none)'}
 
 Context [Execution]:
 ${executionContext}
+
+━━━━━━━━━━━━━━━━━━━━━━
+MANDATORY POST-SOLIDIFY STEP (Wrapper Authority -- Cannot Be Skipped)
+━━━━━━━━━━━━━━━━━━━━━━
+
+After solidify, a status summary file MUST exist for this cycle.
+Preferred path: evolver core auto-writes it during solidify.
+The wrapper will handle reporting AFTER git push.
+If core write is unavailable for any reason, create fallback status JSON manually.
+
+Write a JSON file with your status:
+\`\`\`bash
+cat > /home/crishaocredits/.openclaw/workspace/logs/status_${cycleId}.json << 'STATUSEOF'
+{
+  "result": "success|failed",
+  "en": "Status: [INTENT] <describe what you did in 1-2 sentences, in English>",
+  "zh": "状态: [意图] <用中文描述你做了什么，1-2句>"
+}
+STATUSEOF
+\`\`\`
+
+Rules:
+- "en" field: English status. "zh" field: Chinese status. Content must match (different language).
+- Add "result" with value success or failed.
+- INTENT must be one of: INNOVATION, REPAIR, OPTIMIZE (or Chinese: 创新, 修复, 优化)
+- Do NOT use generic text like "Step Complete", "Cycle finished", "周期已完成". Describe the actual work.
+- Example:
+  {"result":"success","en":"Status: [INNOVATION] Created auto-scheduler that syncs calendar to HEARTBEAT.md","zh":"状态: [创新] 创建了自动调度器，将日历同步到 HEARTBEAT.md"}
 `.trim();
 
-  // Strict truncation to avoid context overflow
-  const maxChars = Number.isFinite(Number(process.env.GEP_PROMPT_MAX_CHARS))
-    ? Number(process.env.GEP_PROMPT_MAX_CHARS)
-    : 50000; // Increased default limit
+  const maxChars = Number.isFinite(Number(process.env.GEP_PROMPT_MAX_CHARS)) ? Number(process.env.GEP_PROMPT_MAX_CHARS) : 50000;
 
   if (basePrompt.length <= maxChars) return basePrompt;
   
-  // If still too large, cut the execution context further
-  const charsOver = basePrompt.length - maxChars;
   const executionContextIndex = basePrompt.indexOf("Context [Execution]:");
-  
   if (executionContextIndex > -1) {
-      // Keep everything before execution context
-      const prefix = basePrompt.slice(0, executionContextIndex + 20); // + length of "Context [Execution]:"
+      const prefix = basePrompt.slice(0, executionContextIndex + 20);
       const currentExecution = basePrompt.slice(executionContextIndex + 20);
-      
       const allowedExecutionLength = Math.max(0, maxChars - prefix.length - 100);
-      return prefix + "\n" + currentExecution.slice(0, allowedExecutionLength) + "\n...[TRUNCATED FOR BUDGET]...";
+      return prefix + "\n" + currentExecution.slice(0, allowedExecutionLength) + "\n...[TRUNCATED]...";
   }
 
-  return basePrompt.slice(0, maxChars) + "\n...[TRUNCATED FOR BUDGET]...";
+  return basePrompt.slice(0, maxChars) + "\n...[TRUNCATED]...";
 }
 
 module.exports = { buildGepPrompt, buildReusePrompt, buildHubMatchedBlock };

@@ -26,8 +26,8 @@ function buildValidationReport({ geneId, commands, results, envFp, startedAt, fi
       return {
         command: String(cmd || ''),
         ok: !!r.ok,
-        stdout: String(r.out || '').slice(0, 4000),
-        stderr: String(r.err || '').slice(0, 4000),
+        stdout: String(r.out || r.stdout || '').slice(0, 4000), // Updated to support both 'out' and 'stdout'
+        stderr: String(r.err || r.stderr || '').slice(0, 4000), // Updated to support both 'err' and 'stderr'
       };
     }),
     overall_ok: overallOk,

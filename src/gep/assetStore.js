@@ -70,12 +70,61 @@ function getDefaultGenes() {
 function getDefaultCapsules() { return { version: 1, capsules: [] }; }
 function genesPath() { return path.join(getGepAssetsDir(), 'genes.json'); }
 function capsulesPath() { return path.join(getGepAssetsDir(), 'capsules.json'); }
+function capsulesJsonlPath() { return path.join(getGepAssetsDir(), 'capsules.jsonl'); }
 function eventsPath() { return path.join(getGepAssetsDir(), 'events.jsonl'); }
 function candidatesPath() { return path.join(getGepAssetsDir(), 'candidates.jsonl'); }
 function externalCandidatesPath() { return path.join(getGepAssetsDir(), 'external_candidates.jsonl'); }
 
-function loadGenes() { return readJsonIfExists(genesPath(), getDefaultGenes()).genes || []; }
-function loadCapsules() { return readJsonIfExists(capsulesPath(), getDefaultCapsules()).capsules || []; }
+function loadGenes() {
+  const jsonGenes = readJsonIfExists(genesPath(), getDefaultGenes()).genes || [];
+  const jsonlGenes = [];
+  try {
+    const p = path.join(getGepAssetsDir(), 'genes.jsonl');
+    if (fs.existsSync(p)) {
+      const raw = fs.readFileSync(p, 'utf8');
+      raw.split('\n').forEach(line => {
+        if (line.trim()) {
+          try {
+            const parsed = JSON.parse(line);
+            if (parsed && parsed.type === 'Gene') jsonlGenes.push(parsed);
+          } catch(e) {}
+        }
+      });
+    }
+  } catch(e) {}
+
+  // Combine and deduplicate by ID (JSONL takes precedence if newer, but here we just merge)
+  const combined = [...jsonGenes, ...jsonlGenes];
+  const unique = new Map();
+  combined.forEach(g => {
+    if (g && g.id) unique.set(String(g.id), g);
+  });
+  return Array.from(unique.values());
+}
+
+function loadCapsules() {
+  const legacy = readJsonIfExists(capsulesPath(), getDefaultCapsules()).capsules || [];
+  const jsonlCapsules = [];
+  try {
+    const p = capsulesJsonlPath();
+    if (fs.existsSync(p)) {
+      const raw = fs.readFileSync(p, 'utf8');
+      raw.split('\n').forEach(line => {
+        if (line.trim()) {
+            try { jsonlCapsules.push(JSON.parse(line)); } catch(e) {}
+        }
+      });
+    }
+  } catch(e) {}
+  
+  // Combine and deduplicate by ID
+  const combined = [...legacy, ...jsonlCapsules];
+  const unique = new Map();
+  combined.forEach(c => {
+      if (c && c.id) unique.set(String(c.id), c);
+  });
+  return Array.from(unique.values());
+}
 
 function getLastEventId() {
   try {
