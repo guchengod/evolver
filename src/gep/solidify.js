@@ -915,7 +915,7 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
   };
   if (!dryRun) writeStateForSolidify(state);
 
-  // Search-First Evolution: auto-publish eligible capsules to the Hub.
+  // Search-First Evolution: auto-publish eligible capsules to the Hub (as Gene+Capsule bundle).
   let publishResult = null;
   if (!dryRun && capsule && capsule.a2a && capsule.a2a.eligible_to_broadcast) {
     const sourceType = lastRun && lastRun.source_type ? String(lastRun.source_type) : 'generated';
@@ -926,34 +926,62 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
     // Skip publishing if: disabled, private, reused asset, or below minimum score
     if (autoPublish && visibility === 'public' && sourceType !== 'reused' && (capsule.outcome.score || 0) >= minPublishScore) {
       try {
-        const { buildPublish, httpTransportSend } = require('./a2aProtocol');
+        const { buildPublishBundle, httpTransportSend } = require('./a2aProtocol');
         const { sanitizePayload } = require('./sanitize');
         const hubUrl = (process.env.A2A_HUB_URL || '').replace(/\/+$/, '');
 
         if (hubUrl) {
-          const sanitized = sanitizePayload(capsule);
-          const msg = buildPublish({ asset: sanitized });
-          const result = httpTransportSend(msg, { hubUrl });
+          // Hub requires bundle format: Gene + Capsule published together.
+          // Build a Gene object from geneUsed if available; otherwise synthesize a minimal Gene.
+          var publishGene = null;
+          if (geneUsed && geneUsed.type === 'Gene' && geneUsed.id) {
+            publishGene = sanitizePayload(geneUsed);
+          } else {
+            // Synthesize minimal Gene from capsule data so bundle validation passes
+            var { computeAssetId: computeId } = require('./a2aProtocol');
+            publishGene = {
+              type: 'Gene',
+              id: capsule.gene || ('gene_auto_' + (capsule.id || Date.now())),
+              category: event && event.intent ? event.intent : 'repair',
+              signals_match: Array.isArray(capsule.trigger) ? capsule.trigger : [],
+              summary: capsule.summary || '',
+            };
+            publishGene.asset_id = computeId(publishGene);
+          }
+
+          var sanitizedCapsule = sanitizePayload(capsule);
+          // Ensure Gene has asset_id
+          if (!publishGene.asset_id) {
+            var { computeAssetId: computeId2 } = require('./a2aProtocol');
+            publishGene.asset_id = computeId2(publishGene);
+          }
+
+          var msg = buildPublishBundle({
+            gene: publishGene,
+            capsule: sanitizedCapsule,
+            event: event && event.type === 'EvolutionEvent' ? sanitizePayload(event) : null,
+          });
+          var result = httpTransportSend(msg, { hubUrl });
           // httpTransportSend returns a Promise
           if (result && typeof result.then === 'function') {
             result
               .then(function (res) {
                 if (res && res.ok) {
-                  console.log(`[AutoPublish] Published ${capsule.asset_id || capsule.id} to Hub.`);
+                  console.log('[AutoPublish] Published bundle (Gene+Capsule) ' + (capsule.asset_id || capsule.id) + ' to Hub.');
                 } else {
-                  console.log(`[AutoPublish] Hub rejected: ${JSON.stringify(res)}`);
+                  console.log('[AutoPublish] Hub rejected: ' + JSON.stringify(res));
                 }
               })
               .catch(function (err) {
-                console.log(`[AutoPublish] Failed (non-fatal): ${err.message}`);
+                console.log('[AutoPublish] Failed (non-fatal): ' + err.message);
               });
           }
-          publishResult = { attempted: true, asset_id: capsule.asset_id || capsule.id };
+          publishResult = { attempted: true, asset_id: capsule.asset_id || capsule.id, bundle: true };
         } else {
           publishResult = { attempted: false, reason: 'no_hub_url' };
         }
       } catch (e) {
-        console.log(`[AutoPublish] Error (non-fatal): ${e.message}`);
+        console.log('[AutoPublish] Error (non-fatal): ' + e.message);
         publishResult = { attempted: false, reason: e.message };
       }
     } else {
