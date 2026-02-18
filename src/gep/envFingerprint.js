@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { getRepoRoot } = require('./paths');
+const { getDeviceId } = require('./deviceId');
 
 // Capture a structured environment fingerprint.
 // This is embedded into Capsules, EvolutionEvents, and ValidationReports.
@@ -20,6 +21,7 @@ function captureEnvFingerprint() {
   } catch (e) {}
 
   return {
+    device_id: getDeviceId(),
     node_version: process.version,
     platform: process.platform,
     arch: process.arch,

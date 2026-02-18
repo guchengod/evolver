@@ -21,6 +21,7 @@ const crypto = require('crypto');
 const { getGepAssetsDir } = require('./paths');
 const { computeAssetId } = require('./contentHash');
 const { captureEnvFingerprint } = require('./envFingerprint');
+const { getDeviceId } = require('./deviceId');
 
 const PROTOCOL_NAME = 'gep-a2a';
 const PROTOCOL_VERSION = '1.0.0';
@@ -32,7 +33,8 @@ function generateMessageId() {
 
 function getNodeId() {
   if (process.env.A2A_NODE_ID) return String(process.env.A2A_NODE_ID);
-  const raw = process.cwd() + '|' + (process.env.AGENT_NAME || 'default');
+  const deviceId = getDeviceId();
+  const raw = deviceId + '|' + (process.env.AGENT_NAME || 'default');
   return 'node_' + crypto.createHash('sha256').update(raw).digest('hex').slice(0, 12);
 }
 
