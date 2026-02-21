@@ -11,4 +11,3 @@ test/tmp/
 
 # Container-local device identity fallback
 .evomap_device_id
-
