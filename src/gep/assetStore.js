@@ -82,6 +82,7 @@ function capsulesJsonlPath() { return path.join(getGepAssetsDir(), 'capsules.jso
 function eventsPath() { return path.join(getGepAssetsDir(), 'events.jsonl'); }
 function candidatesPath() { return path.join(getGepAssetsDir(), 'candidates.jsonl'); }
 function externalCandidatesPath() { return path.join(getGepAssetsDir(), 'external_candidates.jsonl'); }
+function failedCapsulesPath() { return path.join(getGepAssetsDir(), 'failed_capsules.json'); }
 
 function loadGenes() {
   const jsonGenes = readJsonIfExists(genesPath(), getDefaultGenes()).genes || [];
@@ -231,6 +232,34 @@ function upsertCapsule(capsuleObj) {
   writeJsonAtomic(capsulesPath(), { version: current.version || 1, capsules });
 }
 
+var FAILED_CAPSULES_MAX = 200;
+var FAILED_CAPSULES_TRIM_TO = 100;
+
+function getDefaultFailedCapsules() { return { version: 1, failed_capsules: [] }; }
+
+function appendFailedCapsule(capsuleObj) {
+  if (!capsuleObj || typeof capsuleObj !== 'object') return;
+  ensureSchemaFields(capsuleObj);
+  var current = readJsonIfExists(failedCapsulesPath(), getDefaultFailedCapsules());
+  var list = Array.isArray(current.failed_capsules) ? current.failed_capsules : [];
+  list.push(capsuleObj);
+  if (list.length > FAILED_CAPSULES_MAX) {
+    list = list.slice(list.length - FAILED_CAPSULES_TRIM_TO);
+  }
+  writeJsonAtomic(failedCapsulesPath(), { version: current.version || 1, failed_capsules: list });
+}
+
+function readRecentFailedCapsules(limit) {
+  var n = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Number(limit) : 50;
+  try {
+    var current = readJsonIfExists(failedCapsulesPath(), getDefaultFailedCapsules());
+    var list = Array.isArray(current.failed_capsules) ? current.failed_capsules : [];
+    return list.slice(Math.max(0, list.length - n));
+  } catch (e) {
+    return [];
+  }
+}
+
 // Ensure all expected asset files exist on startup.
 // Creates empty files for optional append-only stores so that
 // external grep/read commands never fail with "No such file or directory".
@@ -243,6 +272,7 @@ function ensureAssetFiles() {
     { path: path.join(dir, 'genes.jsonl'), defaultContent: '' },
     { path: eventsPath(), defaultContent: '' },
     { path: candidatesPath(), defaultContent: '' },
+    { path: failedCapsulesPath(), defaultContent: JSON.stringify(getDefaultFailedCapsules(), null, 2) + '\n' },
   ];
   for (const f of files) {
     if (!fs.existsSync(f.path)) {
@@ -261,6 +291,7 @@ module.exports = {
   appendEventJsonl, appendCandidateJsonl, appendExternalCandidateJsonl,
   readRecentCandidates, readRecentExternalCandidates,
   upsertGene, appendCapsule, upsertCapsule,
-  genesPath, capsulesPath, eventsPath, candidatesPath, externalCandidatesPath,
+  appendFailedCapsule, readRecentFailedCapsules,
+  genesPath, capsulesPath, eventsPath, candidatesPath, externalCandidatesPath, failedCapsulesPath,
   ensureAssetFiles, buildValidationCmd,
 };

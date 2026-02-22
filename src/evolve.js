@@ -12,6 +12,7 @@ const {
   appendCandidateJsonl,
   readRecentCandidates,
   readRecentExternalCandidates,
+  readRecentFailedCapsules,
   ensureAssetFiles,
 } = require('./gep/assetStore');
 const { selectGeneAndCapsule, matchPatternToSignals } = require('./gep/selector');
@@ -342,6 +343,47 @@ function getMutationDirective(logContent) {
 }
 
 const STATE_FILE = path.join(getEvolutionDir(), 'evolution_state.json');
+const DORMANT_HYPOTHESIS_FILE = path.join(getEvolutionDir(), 'dormant_hypothesis.json');
+var DORMANT_TTL_MS = 3600 * 1000;
+
+function writeDormantHypothesis(data) {
+  try {
+    var dir = getEvolutionDir();
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    var obj = Object.assign({}, data, { created_at: new Date().toISOString(), ttl_ms: DORMANT_TTL_MS });
+    var tmp = DORMANT_HYPOTHESIS_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmp, DORMANT_HYPOTHESIS_FILE);
+    console.log('[DormantHypothesis] Saved partial state before backoff: ' + (data.backoff_reason || 'unknown'));
+  } catch (e) {
+    console.log('[DormantHypothesis] Write failed (non-fatal): ' + (e && e.message ? e.message : e));
+  }
+}
+
+function readDormantHypothesis() {
+  try {
+    if (!fs.existsSync(DORMANT_HYPOTHESIS_FILE)) return null;
+    var raw = fs.readFileSync(DORMANT_HYPOTHESIS_FILE, 'utf8');
+    if (!raw.trim()) return null;
+    var obj = JSON.parse(raw);
+    var createdAt = obj.created_at ? new Date(obj.created_at).getTime() : 0;
+    var ttl = Number.isFinite(Number(obj.ttl_ms)) ? Number(obj.ttl_ms) : DORMANT_TTL_MS;
+    if (Date.now() - createdAt > ttl) {
+      clearDormantHypothesis();
+      console.log('[DormantHypothesis] Expired (age: ' + Math.round((Date.now() - createdAt) / 1000) + 's). Discarded.');
+      return null;
+    }
+    return obj;
+  } catch (e) {
+    return null;
+  }
+}
+
+function clearDormantHypothesis() {
+  try {
+    if (fs.existsSync(DORMANT_HYPOTHESIS_FILE)) fs.unlinkSync(DORMANT_HYPOTHESIS_FILE);
+  } catch (e) {}
+}
 // Read MEMORY.md and USER.md from the WORKSPACE root (not the evolver plugin dir).
 // This avoids symlink breakage if the target file is temporarily deleted.
 const WORKSPACE_ROOT = process.env.OPENCLAW_WORKSPACE || path.resolve(REPO_ROOT, '../..');
@@ -610,6 +652,11 @@ async function run() {
   const activeUserSessions = getRecentActiveSessionCount(10 * 60 * 1000);
   if (activeUserSessions > QUEUE_MAX) {
     console.log(`[Evolver] Agent has ${activeUserSessions} active user sessions (max ${QUEUE_MAX}). Backing off ${QUEUE_BACKOFF_MS}ms to avoid starving user conversations.`);
+    writeDormantHypothesis({
+      backoff_reason: 'active_sessions_exceeded',
+      active_sessions: activeUserSessions,
+      queue_max: QUEUE_MAX,
+    });
     await sleepMs(QUEUE_BACKOFF_MS);
     return;
   }
@@ -622,6 +669,11 @@ async function run() {
   const sysLoad = getSystemLoad();
   if (sysLoad.load1m > LOAD_MAX) {
     console.log(`[Evolver] System load ${sysLoad.load1m.toFixed(2)} exceeds max ${LOAD_MAX}. Backing off ${QUEUE_BACKOFF_MS}ms.`);
+    writeDormantHypothesis({
+      backoff_reason: 'system_load_exceeded',
+      system_load: { load1m: sysLoad.load1m, load5m: sysLoad.load5m, load15m: sysLoad.load15m },
+      load_max: LOAD_MAX,
+    });
     await sleepMs(QUEUE_BACKOFF_MS);
     return;
   }
@@ -636,7 +688,14 @@ async function run() {
       if (lastRun && lastRun.run_id) {
         const pending = !lastSolid || !lastSolid.run_id || String(lastSolid.run_id) !== String(lastRun.run_id);
         if (pending) {
-          // Backoff to avoid tight loops and disk churn.
+          writeDormantHypothesis({
+            backoff_reason: 'loop_gating_pending_solidify',
+            signals: lastRun && Array.isArray(lastRun.signals) ? lastRun.signals : [],
+            selected_gene_id: lastRun && lastRun.selected_gene_id ? lastRun.selected_gene_id : null,
+            mutation: lastRun && lastRun.mutation ? lastRun.mutation : null,
+            personality_state: lastRun && lastRun.personality_state ? lastRun.personality_state : null,
+            run_id: lastRun.run_id,
+          });
           const raw = process.env.EVOLVE_PENDING_SLEEP_MS || process.env.EVOLVE_MIN_INTERVAL || '120000';
           const n = parseInt(String(raw), 10);
           const waitMs = Number.isFinite(n) ? Math.max(0, n) : 120000;
@@ -670,6 +729,12 @@ async function run() {
   }
 
   delete process.env.FORCE_INNOVATION;
+
+  var dormantHypothesis = readDormantHypothesis();
+  if (dormantHypothesis) {
+    console.log('[DormantHypothesis] Recovered partial state from previous backoff: ' + (dormantHypothesis.backoff_reason || 'unknown'));
+    clearDormantHypothesis();
+  }
 
   const startTime = Date.now();
   console.log('Scanning session logs...');
@@ -869,6 +934,20 @@ async function run() {
     userSnippet,
     recentEvents,
   });
+
+  if (dormantHypothesis && Array.isArray(dormantHypothesis.signals) && dormantHypothesis.signals.length > 0) {
+    var dormantSignals = dormantHypothesis.signals;
+    var injected = 0;
+    for (var dsi = 0; dsi < dormantSignals.length; dsi++) {
+      if (!signals.includes(dormantSignals[dsi])) {
+        signals.push(dormantSignals[dsi]);
+        injected++;
+      }
+    }
+    if (injected > 0) {
+      console.log('[DormantHypothesis] Injected ' + injected + ' signal(s) from previous interrupted cycle.');
+    }
+  }
 
   // --- Hub Task Auto-Claim (with proactive questions) ---
   // Generate questions from current context, piggyback them on the fetch call,
@@ -1070,12 +1149,20 @@ async function run() {
     throw new Error(`MemoryGraph Read failed: ${e.message}`);
   }
 
+  var recentFailedCapsules = [];
+  try {
+    recentFailedCapsules = readRecentFailedCapsules(50);
+  } catch (e) {
+    console.log('[FailedCapsules] Read failed (non-fatal): ' + e.message);
+  }
+
   const { selectedGene, capsuleCandidates, selector } = selectGeneAndCapsule({
     genes,
     capsules,
     signals,
     memoryAdvice,
     driftEnabled: IS_RANDOM_DRIFT,
+    failedCapsules: recentFailedCapsules,
   });
 
   const selectedBy = memoryAdvice && memoryAdvice.preferredGeneId ? 'memory_graph+selector' : 'selector';
@@ -1362,6 +1449,7 @@ ${mutationDirective}
         capabilityCandidatesPreview,
         externalCandidatesPreview,
         hubMatchedBlock,
+        failedCapsules: recentFailedCapsules,
       });
 
   // Optional: emit a compact thought process block for wrappers (noise-controlled).

@@ -157,6 +157,35 @@ ENSURE VALID JSON SYNTAX (escape quotes in strings).
    }
 `.trim();
 
+function buildAntiPatternZone(failedCapsules, signals) {
+  if (!Array.isArray(failedCapsules) || failedCapsules.length === 0) return '';
+  if (!Array.isArray(signals) || signals.length === 0) return '';
+  var sigSet = new Set(signals.map(function (s) { return String(s).toLowerCase(); }));
+  var matched = [];
+  for (var i = failedCapsules.length - 1; i >= 0 && matched.length < 3; i--) {
+    var fc = failedCapsules[i];
+    if (!fc) continue;
+    var triggers = Array.isArray(fc.trigger) ? fc.trigger : [];
+    var overlap = 0;
+    for (var j = 0; j < triggers.length; j++) {
+      if (sigSet.has(String(triggers[j]).toLowerCase())) overlap++;
+    }
+    if (triggers.length > 0 && overlap / triggers.length >= 0.4) {
+      matched.push(fc);
+    }
+  }
+  if (matched.length === 0) return '';
+  var lines = matched.map(function (fc, idx) {
+    var diffPreview = fc.diff_snapshot ? String(fc.diff_snapshot).slice(0, 500) : '(no diff)';
+    return [
+      '  ' + (idx + 1) + '. Gene: ' + (fc.gene || 'unknown') + ' | Signals: [' + (fc.trigger || []).slice(0, 4).join(', ') + ']',
+      '     Failure: ' + String(fc.failure_reason || 'unknown').slice(0, 300),
+      '     Diff (first 500 chars): ' + diffPreview.replace(/\n/g, ' '),
+    ].join('\n');
+  });
+  return '\nContext [Anti-Pattern Zone] (AVOID these failed approaches):\n' + lines.join('\n') + '\n';
+}
+
 function buildGepPrompt({
   nowIso,
   context,
@@ -171,7 +200,8 @@ function buildGepPrompt({
   externalCandidatesPreview,
   hubMatchedBlock,
   cycleId,
-  recentHistory, // [2026-02-14] Pass recent history
+  recentHistory,
+  failedCapsules,
 }) {
   const parentValue = parentEventId ? `"${parentEventId}"` : 'null';
   const selectedGeneId = selectedGene && selectedGene.id ? selectedGene.id : 'gene_<name>';
@@ -404,7 +434,7 @@ ${hubMatchedBlock || '(no hub match)'}
 
 Context [External Candidates]:
 ${externalCandidatesPreview || '(none)'}
-
+${buildAntiPatternZone(failedCapsules, signals)}
 ${historyBlock}
 
 Context [Execution]:

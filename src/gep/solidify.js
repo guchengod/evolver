@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
-const { loadGenes, upsertGene, appendEventJsonl, appendCapsule, upsertCapsule, getLastEventId } = require('./assetStore');
+const { loadGenes, upsertGene, appendEventJsonl, appendCapsule, upsertCapsule, getLastEventId, appendFailedCapsule } = require('./assetStore');
 const { computeSignalKey, memoryGraphPath } = require('./memoryGraph');
 const { computeCapsuleSuccessStreak, isBlastRadiusSafe } = require('./a2a');
 const { getRepoRoot, getMemoryDir, getEvolutionDir, getWorkspaceRoot } = require('./paths');
@@ -592,6 +592,47 @@ function runCanaryCheck(opts) {
   };
 }
 
+var DIFF_SNAPSHOT_MAX_CHARS = 8000;
+
+function captureDiffSnapshot(repoRoot) {
+  var parts = [];
+  var unstaged = tryRunCmd('git diff', { cwd: repoRoot, timeoutMs: 30000 });
+  if (unstaged.ok && unstaged.out) parts.push(String(unstaged.out));
+  var staged = tryRunCmd('git diff --cached', { cwd: repoRoot, timeoutMs: 30000 });
+  if (staged.ok && staged.out) parts.push(String(staged.out));
+  var combined = parts.join('\n');
+  if (combined.length > DIFF_SNAPSHOT_MAX_CHARS) {
+    combined = combined.slice(0, DIFF_SNAPSHOT_MAX_CHARS) + '\n... [TRUNCATED]';
+  }
+  return combined || '';
+}
+
+function buildFailureReason(constraintCheck, validation, protocolViolations, canary) {
+  var reasons = [];
+  if (constraintCheck && Array.isArray(constraintCheck.violations)) {
+    for (var i = 0; i < constraintCheck.violations.length; i++) {
+      reasons.push('constraint: ' + constraintCheck.violations[i]);
+    }
+  }
+  if (Array.isArray(protocolViolations)) {
+    for (var j = 0; j < protocolViolations.length; j++) {
+      reasons.push('protocol: ' + protocolViolations[j]);
+    }
+  }
+  if (validation && Array.isArray(validation.results)) {
+    for (var k = 0; k < validation.results.length; k++) {
+      var r = validation.results[k];
+      if (r && !r.ok) {
+        reasons.push('validation_failed: ' + String(r.cmd || '').slice(0, 120) + ' => ' + String(r.err || '').slice(0, 200));
+      }
+    }
+  }
+  if (canary && !canary.ok && !canary.skipped) {
+    reasons.push('canary_failed: ' + String(canary.err || '').slice(0, 200));
+  }
+  return reasons.join('; ').slice(0, 2000) || 'unknown';
+}
+
 function rollbackTracked(repoRoot) {
   tryRunCmd('git restore --staged --worktree .', { cwd: repoRoot, timeoutMs: 60000 });
   tryRunCmd('git reset --hard', { cwd: repoRoot, timeoutMs: 60000 });
@@ -1029,7 +1070,37 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
     capsule.asset_id = computeAssetId(capsule);
   }
 
-  // Bug fix: dry-run must NOT trigger rollback (it should only observe, not mutate).
+  // Capture failed mutation as a FailedCapsule before rollback destroys the diff.
+  if (!dryRun && !success) {
+    try {
+      var diffSnapshot = captureDiffSnapshot(repoRoot);
+      if (diffSnapshot) {
+        var failedCapsule = {
+          type: 'Capsule',
+          schema_version: SCHEMA_VERSION,
+          id: 'failed_' + buildCapsuleId(ts),
+          outcome: { status: 'failed', score: score },
+          gene: geneUsed && geneUsed.id ? geneUsed.id : null,
+          trigger: Array.isArray(signals) ? signals.slice(0, 8) : [],
+          summary: geneUsed
+            ? 'Failed: ' + geneUsed.id + ' on signals [' + (signals.slice(0, 3).join(', ') || 'none') + ']'
+            : 'Failed evolution on signals [' + (signals.slice(0, 3).join(', ') || 'none') + ']',
+          diff_snapshot: diffSnapshot,
+          failure_reason: buildFailureReason(constraintCheck, validation, protocolViolations, canary),
+          constraint_violations: constraintCheck.violations || [],
+          env_fingerprint: envFp,
+          blast_radius: { files: blast.files, lines: blast.lines },
+          created_at: ts,
+        };
+        failedCapsule.asset_id = computeAssetId(failedCapsule);
+        appendFailedCapsule(failedCapsule);
+        console.log('[Solidify] Preserved failed mutation as FailedCapsule: ' + failedCapsule.id);
+      }
+    } catch (e) {
+      console.log('[Solidify] FailedCapsule capture error (non-fatal): ' + (e && e.message ? e.message : e));
+    }
+  }
+
   if (!dryRun && !success && rollbackOnFailure) {
     rollbackTracked(repoRoot);
     rollbackNewUntrackedFiles({ repoRoot, baselineUntracked: lastRun && lastRun.baseline_untracked ? lastRun.baseline_untracked : [] });
@@ -1152,6 +1223,60 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
     }
   }
 
+  // --- Anti-pattern auto-publish ---
+  // Publish high-information-value failures to the Hub as anti-pattern assets.
+  // Only enabled via EVOLVER_PUBLISH_ANTI_PATTERNS=true (opt-in).
+  // Only constraint violations or canary failures qualify (not routine validation failures).
+  var antiPatternPublishResult = null;
+  if (!dryRun && !success) {
+    var publishAntiPatterns = String(process.env.EVOLVER_PUBLISH_ANTI_PATTERNS || '').toLowerCase() === 'true';
+    var hubUrl = (process.env.A2A_HUB_URL || '').replace(/\/+$/, '');
+    var hasHighInfoFailure = (constraintCheck.violations && constraintCheck.violations.length > 0)
+      || (canary && !canary.ok && !canary.skipped);
+    if (publishAntiPatterns && hubUrl && hasHighInfoFailure) {
+      try {
+        var { buildPublishBundle: buildApBundle, httpTransportSend: httpApSend } = require('./a2aProtocol');
+        var { sanitizePayload: sanitizeAp } = require('./sanitize');
+        var apGene = geneUsed && geneUsed.type === 'Gene' && geneUsed.id
+          ? sanitizeAp(geneUsed)
+          : { type: 'Gene', id: 'gene_unknown_' + Date.now(), category: derivedIntent, signals_match: signals.slice(0, 8), summary: 'Failed evolution gene' };
+        apGene.anti_pattern = true;
+        apGene.failure_reason = buildFailureReason(constraintCheck, validation, protocolViolations, canary);
+        apGene.asset_id = computeAssetId(apGene);
+        var apCapsule = {
+          type: 'Capsule',
+          schema_version: SCHEMA_VERSION,
+          id: 'failed_' + buildCapsuleId(ts),
+          trigger: signals.slice(0, 8),
+          gene: apGene.id,
+          summary: 'Anti-pattern: ' + String(apGene.failure_reason).slice(0, 200),
+          confidence: 0,
+          blast_radius: { files: blast.files, lines: blast.lines },
+          outcome: { status: 'failed', score: score },
+          failure_reason: apGene.failure_reason,
+          a2a: { eligible_to_broadcast: false },
+        };
+        apCapsule.asset_id = computeAssetId(apCapsule);
+        var apMsg = buildApBundle({ gene: apGene, capsule: sanitizeAp(apCapsule), event: null });
+        var apResult = httpApSend(apMsg, { hubUrl });
+        if (apResult && typeof apResult.then === 'function') {
+          apResult
+            .then(function (res) {
+              if (res && res.ok) console.log('[AntiPatternPublish] Published failed bundle to Hub: ' + apCapsule.id);
+              else console.log('[AntiPatternPublish] Hub rejected: ' + JSON.stringify(res));
+            })
+            .catch(function (err) {
+              console.log('[AntiPatternPublish] Failed (non-fatal): ' + err.message);
+            });
+        }
+        antiPatternPublishResult = { attempted: true, asset_id: apCapsule.asset_id };
+      } catch (e) {
+        console.log('[AntiPatternPublish] Error (non-fatal): ' + e.message);
+        antiPatternPublishResult = { attempted: false, reason: e.message };
+      }
+    }
+  }
+
   // --- Auto-complete Hub task ---
   // If this evolution cycle was driven by a Hub task, mark it as completed
   // with the produced capsule's asset_id. Runs after publish so the Hub
@@ -1186,7 +1311,7 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
     }
   }
 
-  return { ok: success, event, capsule, gene: geneUsed, constraintCheck, validation, validationReport, blast, publishResult, taskCompleteResult };
+  return { ok: success, event, capsule, gene: geneUsed, constraintCheck, validation, validationReport, blast, publishResult, antiPatternPublishResult, taskCompleteResult };
 }
 
 module.exports = {

@@ -139,13 +139,54 @@ function selectCapsule(capsules, signals) {
   return scored.length ? scored[0].capsule : null;
 }
 
-function selectGeneAndCapsule({ genes, capsules, signals, memoryAdvice, driftEnabled }) {
+function computeSignalOverlap(signalsA, signalsB) {
+  if (!Array.isArray(signalsA) || !Array.isArray(signalsB)) return 0;
+  if (signalsA.length === 0 || signalsB.length === 0) return 0;
+  var setB = new Set(signalsB.map(function (s) { return String(s).toLowerCase(); }));
+  var hits = 0;
+  for (var i = 0; i < signalsA.length; i++) {
+    if (setB.has(String(signalsA[i]).toLowerCase())) hits++;
+  }
+  return hits / Math.max(signalsA.length, 1);
+}
+
+var FAILED_CAPSULE_BAN_THRESHOLD = 2;
+var FAILED_CAPSULE_OVERLAP_MIN = 0.6;
+
+function banGenesFromFailedCapsules(failedCapsules, signals, existingBans) {
+  var bans = existingBans instanceof Set ? new Set(existingBans) : new Set();
+  if (!Array.isArray(failedCapsules) || failedCapsules.length === 0) return bans;
+  var geneFailCounts = {};
+  for (var i = 0; i < failedCapsules.length; i++) {
+    var fc = failedCapsules[i];
+    if (!fc || !fc.gene) continue;
+    var overlap = computeSignalOverlap(signals, fc.trigger || []);
+    if (overlap < FAILED_CAPSULE_OVERLAP_MIN) continue;
+    var gid = String(fc.gene);
+    geneFailCounts[gid] = (geneFailCounts[gid] || 0) + 1;
+  }
+  var keys = Object.keys(geneFailCounts);
+  for (var j = 0; j < keys.length; j++) {
+    if (geneFailCounts[keys[j]] >= FAILED_CAPSULE_BAN_THRESHOLD) {
+      bans.add(keys[j]);
+    }
+  }
+  return bans;
+}
+
+function selectGeneAndCapsule({ genes, capsules, signals, memoryAdvice, driftEnabled, failedCapsules }) {
   const bannedGeneIds =
     memoryAdvice && memoryAdvice.bannedGeneIds instanceof Set ? memoryAdvice.bannedGeneIds : new Set();
   const preferredGeneId = memoryAdvice && memoryAdvice.preferredGeneId ? memoryAdvice.preferredGeneId : null;
 
+  var effectiveBans = banGenesFromFailedCapsules(
+    Array.isArray(failedCapsules) ? failedCapsules : [],
+    signals,
+    bannedGeneIds
+  );
+
   const { selected, alternatives, driftIntensity } = selectGene(genes, signals, {
-    bannedGeneIds,
+    bannedGeneIds: effectiveBans,
     preferredGeneId,
     driftEnabled: !!driftEnabled,
   });
