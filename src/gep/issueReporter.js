@@ -5,7 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { getEvolutionDir, getRepoRoot } = require('./paths');
+const { getEvolutionDir } = require('./paths');
 const { captureEnvFingerprint } = require('./envFingerprint');
 const { redactString } = require('./sanitize');
 const { getNodeId } = require('./a2aProtocol');
@@ -206,11 +206,7 @@ async function createGithubIssue(repo, title, body, token) {
       'Content-Type': 'application/json',
       'X-GitHub-Api-Version': '2022-11-28',
     },
-    body: JSON.stringify({
-      title: title,
-      body: body,
-      labels: ['auto-report', 'bug'],
-    }),
+    body: JSON.stringify({ title: title, body: body }),
     signal: AbortSignal.timeout(15000),
   });
 
