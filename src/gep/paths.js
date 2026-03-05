@@ -1,13 +1,35 @@
 const path = require('path');
+const fs = require('fs');
 
 function getRepoRoot() {
-  // src/gep/paths.js -> repo root
+  if (process.env.EVOLVER_REPO_ROOT) {
+    return process.env.EVOLVER_REPO_ROOT;
+  }
+
+  let dir = path.resolve(__dirname, '..', '..');
+  while (dir !== '/' && dir !== '.') {
+    const gitDir = path.join(dir, '.git');
+    if (fs.existsSync(gitDir)) {
+      return dir;
+    }
+    dir = path.dirname(dir);
+  }
+
   return path.resolve(__dirname, '..', '..');
 }
 
 function getWorkspaceRoot() {
-  // skills/evolver -> workspace root
-  return path.resolve(getRepoRoot(), '..', '..');
+  if (process.env.OPENCLAW_WORKSPACE) {
+    return process.env.OPENCLAW_WORKSPACE;
+  }
+
+  const repoRoot = getRepoRoot();
+  const workspaceDir = path.join(repoRoot, 'workspace');
+  if (fs.existsSync(workspaceDir)) {
+    return workspaceDir;
+  }
+
+  return path.resolve(__dirname, '..', '..', '..', '..');
 }
 
 function getLogsDir() {
@@ -62,7 +84,7 @@ function getNarrativePath() {
 function getEvolutionPrinciplesPath() {
   const repoRoot = getRepoRoot();
   const custom = path.join(repoRoot, 'EVOLUTION_PRINCIPLES.md');
-  if (require('fs').existsSync(custom)) return custom;
+  if (fs.existsSync(custom)) return custom;
   return path.join(repoRoot, 'assets', 'gep', 'EVOLUTION_PRINCIPLES.md');
 }
 
