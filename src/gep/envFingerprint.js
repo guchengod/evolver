@@ -15,12 +15,27 @@ function captureEnvFingerprint() {
   const repoRoot = getRepoRoot();
   let pkgVersion = null;
   let pkgName = null;
+
+  // Read evolver's own package.json via __dirname so that npm-installed
+  // deployments report the correct evolver version. getRepoRoot() walks
+  // up to the nearest .git directory, which resolves to the HOST project
+  // when evolver is an npm dependency -- producing a wrong name/version.
+  const ownPkgPath = path.resolve(__dirname, '..', '..', 'package.json');
   try {
-    const raw = fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8');
+    const raw = fs.readFileSync(ownPkgPath, 'utf8');
     const pkg = JSON.parse(raw);
     pkgVersion = pkg && pkg.version ? String(pkg.version) : null;
     pkgName = pkg && pkg.name ? String(pkg.name) : null;
   } catch (e) {}
+
+  if (!pkgVersion) {
+    try {
+      const raw = fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8');
+      const pkg = JSON.parse(raw);
+      pkgVersion = pkg && pkg.version ? String(pkg.version) : null;
+      pkgName = pkg && pkg.name ? String(pkg.name) : null;
+    } catch (e) {}
+  }
 
   const region = (process.env.EVOLVER_REGION || '').trim().toLowerCase().slice(0, 5) || undefined;
 
