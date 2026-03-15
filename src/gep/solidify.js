@@ -1350,7 +1350,10 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
   state.last_solidify = {
     run_id: runId, at: ts, event_id: event.id, capsule_id: capsuleId, outcome: event.outcome,
   };
-  if (!dryRun) writeStateForSolidify(state);
+  if (!dryRun) {
+    state.solidify_count = (state.solidify_count || 0) + 1;
+    writeStateForSolidify(state);
+  }
 
   if (!dryRun) {
     try {

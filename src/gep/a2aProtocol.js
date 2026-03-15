@@ -402,6 +402,7 @@ var _heartbeatTotalFailed = 0;
 var _heartbeatFpSent = false;
 var _latestAvailableWork = [];
 var _latestOverdueTasks = [];
+var _latestSkillStoreHint = null;
 var _pendingCommitmentUpdates = [];
 var _cachedHubNodeSecret = null;
 var _heartbeatIntervalMs = 0;
@@ -576,6 +577,12 @@ function sendHeartbeat() {
         _latestOverdueTasks = data.overdue_tasks;
         console.warn('[Commitment] ' + data.overdue_tasks.length + ' overdue task(s) detected via heartbeat.');
       }
+      if (data.skill_store) {
+        _latestSkillStoreHint = data.skill_store;
+        if (data.skill_store.eligible && data.skill_store.published_skills === 0) {
+          console.log('[Skill Store] ' + data.skill_store.hint);
+        }
+      }
       _heartbeatConsecutiveFailures = 0;
       try {
         var logPath = getEvolverLogPath();
@@ -627,6 +634,10 @@ function consumeAvailableWork() {
 
 function getOverdueTasks() {
   return _latestOverdueTasks;
+}
+
+function getSkillStoreHint() {
+  return _latestSkillStoreHint;
 }
 
 function consumeOverdueTasks() {
@@ -746,6 +757,7 @@ module.exports = {
   consumeAvailableWork,
   getOverdueTasks,
   consumeOverdueTasks,
+  getSkillStoreHint,
   queueCommitmentUpdate,
   getHubNodeSecret,
   buildHubHeaders,

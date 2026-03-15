@@ -285,11 +285,19 @@ async function main() {
       if (res && res.ok && !dryRun) {
         try {
           const { shouldDistill, prepareDistillation } = require('./src/gep/skillDistiller');
-          if (shouldDistill()) {
+          const { readStateForSolidify } = require('./src/gep/solidify');
+          const solidifyState = readStateForSolidify();
+          const count = solidifyState.solidify_count || 0;
+          const autoDistillInterval = 5;
+          const autoTrigger = count > 0 && count % autoDistillInterval === 0;
+
+          if (autoTrigger || shouldDistill()) {
             const dr = prepareDistillation();
             if (dr && dr.ok && dr.promptPath) {
+              const trigger = autoTrigger ? `auto (every ${autoDistillInterval} solidifies, count=${count})` : 'threshold';
               console.log('\n[DISTILL_REQUEST]');
-              console.log('Distillation prompt ready. Read the prompt file, process it with your LLM,');
+              console.log(`Distillation triggered: ${trigger}`);
+              console.log('Read the prompt file, process it with your LLM,');
               console.log('save the LLM response to a file, then run:');
               console.log('  node index.js distill --response-file=<path_to_llm_response>');
               console.log('Prompt file: ' + dr.promptPath);
