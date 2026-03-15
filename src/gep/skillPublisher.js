@@ -3,54 +3,94 @@
 var { getHubUrl, buildHubHeaders, getNodeId } = require('./a2aProtocol');
 
 /**
- * Convert a Gene object into SKILL.md format (Claude/Anthropic style).
- *
- * @param {object} gene - Gene asset
- * @returns {string} SKILL.md content
+ * Sanitize a raw gene id into a human-readable kebab-case skill name.
+ * Returns null if the name is unsalvageable (pure numbers, tool name, etc.).
  */
 function sanitizeSkillName(rawName) {
   var name = rawName.replace(/[\r\n]+/g, '-').replace(/^gene_distilled_/, '').replace(/^gene_/, '').replace(/_/g, '-');
+  // Strip ALL embedded timestamps (10+ digit sequences) anywhere in the name
+  name = name.replace(/-?\d{10,}-?/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
   if (/^\d{8,}/.test(name) || /^(cursor|vscode|vim|emacs|windsurf|copilot|cline|codex)[-]?\d*$/i.test(name)) {
     return null;
   }
-  name = name.replace(/-?\d{10,}$/g, '').replace(/-+$/, '');
   if (name.replace(/[-]/g, '').length < 6) return null;
   return name;
 }
 
+/**
+ * Derive a Title Case display name from a kebab-case skill name.
+ * "retry-with-backoff" -> "Retry With Backoff"
+ */
+function toTitleCase(kebabName) {
+  return kebabName.split('-').map(function (w) {
+    if (!w) return '';
+    return w.charAt(0).toUpperCase() + w.slice(1);
+  }).join(' ');
+}
+
+/**
+ * Derive fallback name words from gene signals/summary when id is not usable.
+ */
+function deriveFallbackName(gene) {
+  var fallbackWords = [];
+  var STOP = new Set(['the', 'and', 'for', 'with', 'from', 'that', 'this', 'into', 'when', 'are', 'was', 'has', 'had', 'not', 'but', 'its']);
+  if (Array.isArray(gene.signals_match)) {
+    gene.signals_match.slice(0, 3).forEach(function (s) {
+      String(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).forEach(function (w) {
+        if (w.length >= 3 && !STOP.has(w) && fallbackWords.length < 5) fallbackWords.push(w);
+      });
+    });
+  }
+  if (fallbackWords.length < 2 && gene.summary) {
+    String(gene.summary).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).forEach(function (w) {
+      if (w.length >= 3 && !STOP.has(w) && fallbackWords.length < 5) fallbackWords.push(w);
+    });
+  }
+  var seen = {};
+  fallbackWords = fallbackWords.filter(function (w) { if (seen[w]) return false; seen[w] = true; return true; });
+  return fallbackWords.length >= 2 ? fallbackWords.join('-') : 'auto-distilled-skill';
+}
+
+/**
+ * Convert a Gene object into SKILL.md format -- marketplace-quality content.
+ *
+ * @param {object} gene - Gene asset
+ * @returns {string} SKILL.md content
+ */
 function geneToSkillMd(gene) {
   var rawName = gene.id || 'unnamed-skill';
-  var name = sanitizeSkillName(rawName);
-  if (!name) {
-    var fallbackWords = [];
-    if (Array.isArray(gene.signals_match)) {
-      gene.signals_match.slice(0, 3).forEach(function (s) {
-        String(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).forEach(function (w) {
-          if (w.length >= 3 && fallbackWords.length < 5) fallbackWords.push(w);
-        });
-      });
-    }
-    if (fallbackWords.length < 2 && gene.summary) {
-      String(gene.summary).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).forEach(function (w) {
-        if (w.length >= 3 && fallbackWords.length < 5) fallbackWords.push(w);
-      });
-    }
-    var seen = {};
-    fallbackWords = fallbackWords.filter(function (w) { if (seen[w]) return false; seen[w] = true; return true; });
-    name = fallbackWords.length >= 2 ? fallbackWords.join('-') : 'auto-distilled-skill';
-  }
-  var desc = (gene.summary || 'AI agent skill distilled from evolution experience.').replace(/[\r\n]+/g, ' ').trim();
+  var name = sanitizeSkillName(rawName) || deriveFallbackName(gene);
+  var displayName = toTitleCase(name);
+  var desc = (gene.summary || '').replace(/[\r\n]+/g, ' ').replace(/\s*\d{10,}\s*$/g, '').trim();
+  if (!desc || desc.length < 10) desc = 'AI agent skill distilled from evolution experience.';
 
   var lines = [
     '---',
-    'name: ' + name,
+    'name: ' + displayName,
     'description: ' + desc,
     '---',
     '',
-    '# ' + name,
+    '# ' + displayName,
+    '',
+    desc,
     '',
   ];
 
+  // -- When to Use --
+  lines.push('## When to Use');
+  lines.push('');
+  if (gene.preconditions && gene.preconditions.length > 0) {
+    gene.preconditions.forEach(function (p) {
+      lines.push('- ' + p);
+    });
+  } else if (gene.signals_match && gene.signals_match.length > 0) {
+    lines.push('- When your project encounters: ' + gene.signals_match.slice(0, 4).map(function (s) {
+      return '`' + s + '`';
+    }).join(', '));
+  }
+  lines.push('');
+
+  // -- Trigger Signals --
   if (gene.signals_match && gene.signals_match.length > 0) {
     lines.push('## Trigger Signals');
     lines.push('');
@@ -60,6 +100,7 @@ function geneToSkillMd(gene) {
     lines.push('');
   }
 
+  // -- Preconditions (if distinct from When to Use) --
   if (gene.preconditions && gene.preconditions.length > 0) {
     lines.push('## Preconditions');
     lines.push('');
@@ -69,27 +110,32 @@ function geneToSkillMd(gene) {
     lines.push('');
   }
 
+  // -- Strategy --
   if (gene.strategy && gene.strategy.length > 0) {
     lines.push('## Strategy');
     lines.push('');
     gene.strategy.forEach(function (step, i) {
-      lines.push((i + 1) + '. ' + step);
+      var text = String(step);
+      // Wrap inline code references for readability
+      lines.push((i + 1) + '. **' + extractStepVerb(text) + '** -- ' + stripLeadingVerb(text));
     });
     lines.push('');
   }
 
+  // -- Constraints --
   if (gene.constraints) {
     lines.push('## Constraints');
     lines.push('');
     if (gene.constraints.max_files) {
-      lines.push('- Max files: ' + gene.constraints.max_files);
+      lines.push('- Max files per invocation: ' + gene.constraints.max_files);
     }
     if (gene.constraints.forbidden_paths && gene.constraints.forbidden_paths.length > 0) {
-      lines.push('- Forbidden paths: ' + gene.constraints.forbidden_paths.join(', '));
+      lines.push('- Forbidden paths: ' + gene.constraints.forbidden_paths.map(function (p) { return '`' + p + '`'; }).join(', '));
     }
     lines.push('');
   }
 
+  // -- Validation --
   if (gene.validation && gene.validation.length > 0) {
     lines.push('## Validation');
     lines.push('');
@@ -101,12 +147,46 @@ function geneToSkillMd(gene) {
     });
   }
 
+  // -- Metadata --
+  lines.push('## Metadata');
+  lines.push('');
+  lines.push('- Category: `' + (gene.category || 'innovate') + '`');
+  lines.push('- Schema version: `' + (gene.schema_version || '1.6.0') + '`');
+  if (gene._distilled_meta && gene._distilled_meta.source_capsule_count) {
+    lines.push('- Distilled from: ' + gene._distilled_meta.source_capsule_count + ' successful capsules');
+  }
+  lines.push('');
+
   lines.push('---');
   lines.push('');
   lines.push('*This Skill was generated by [Evolver](https://github.com/autogame-17/evolver) and is distributed under the [EvoMap Skill License (ESL-1.0)](https://evomap.ai/terms). Unauthorized redistribution, bulk scraping, or republishing is prohibited. See LICENSE file for full terms.*');
   lines.push('');
 
   return lines.join('\n');
+}
+
+/**
+ * Extract the leading verb from a strategy step for bolding.
+ * Only extracts a single verb to avoid splitting compound phrases.
+ * e.g. "Verify Cursor CLI installation" -> "Verify"
+ *      "Run `npm test` to check" -> "Run"
+ *      "Configure non-interactive mode" -> "Configure"
+ */
+function extractStepVerb(step) {
+  var match = step.match(/^([A-Z][a-z]+)/);
+  return match ? match[1] : step.split(/\s+/)[0];
+}
+
+/**
+ * Remove the leading verb from a step (already shown in bold).
+ */
+function stripLeadingVerb(step) {
+  var verb = extractStepVerb(step);
+  if (step.startsWith(verb)) {
+    var rest = step.slice(verb.length).replace(/^[\s:.\-]+/, '');
+    return rest || step;
+  }
+  return step;
 }
 
 /**
@@ -121,18 +201,35 @@ function publishSkillToHub(gene, opts) {
   var hubUrl = getHubUrl();
   if (!hubUrl) return Promise.resolve({ ok: false, error: 'no_hub_url' });
 
+  // Sanitize signals before generating content
+  if (Array.isArray(gene.signals_match)) {
+    try {
+      var distiller = require('./skillDistiller');
+      gene.signals_match = distiller.sanitizeSignalsMatch(gene.signals_match);
+    } catch (e) { /* distiller not available, skip */ }
+  }
+
   var content = geneToSkillMd(gene);
   var nodeId = getNodeId();
   var fmName = content.match(/^name:\s*(.+)$/m);
   var derivedName = fmName ? fmName[1].trim().toLowerCase().replace(/[^a-z0-9]+/g, '_') : (gene.id || 'unnamed').replace(/^gene_/, '');
+  // Strip trailing timestamps from skillId
+  derivedName = derivedName.replace(/_?\d{10,}$/g, '').replace(/_+$/g, '');
   var skillId = 'skill_' + derivedName;
+
+  // Clean tags: strip timestamps and invalid entries
+  var tags = opts.tags || gene.signals_match || [];
+  tags = tags.filter(function (t) {
+    var s = String(t || '').trim();
+    return s.length >= 3 && !/^\d+$/.test(s) && !/\d{10,}/.test(s);
+  });
 
   var body = {
     sender_id: nodeId,
     skill_id: skillId,
     content: content,
     category: opts.category || gene.category || null,
-    tags: opts.tags || gene.signals_match || [],
+    tags: tags,
   };
 
   var endpoint = hubUrl.replace(/\/+$/, '') + '/a2a/skill/store/publish';
@@ -165,12 +262,18 @@ function updateSkillOnHub(nodeId, skillId, content, opts, gene) {
   var hubUrl = getHubUrl();
   if (!hubUrl) return Promise.resolve({ ok: false, error: 'no_hub_url' });
 
+  var tags = opts.tags || gene.signals_match || [];
+  tags = tags.filter(function (t) {
+    var s = String(t || '').trim();
+    return s.length >= 3 && !/^\d+$/.test(s) && !/\d{10,}/.test(s);
+  });
+
   var body = {
     sender_id: nodeId,
     skill_id: skillId,
     content: content,
     category: opts.category || gene.category || null,
-    tags: opts.tags || gene.signals_match || [],
+    tags: tags,
     changelog: 'Iterative evolution update',
   };
 
@@ -196,4 +299,6 @@ module.exports = {
   geneToSkillMd: geneToSkillMd,
   publishSkillToHub: publishSkillToHub,
   updateSkillOnHub: updateSkillOnHub,
+  sanitizeSkillName: sanitizeSkillName,
+  toTitleCase: toTitleCase,
 };

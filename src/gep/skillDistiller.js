@@ -223,32 +223,78 @@ function buildDistillationPrompt(analysis, existingGenes, sampleCapsules) {
   });
 
   return [
-    'You are a Gene synthesis engine for the GEP (Gene Expression Protocol).',
+    'You are a Gene synthesis engine for the GEP (Genome Evolution Protocol).',
+    'Your job is to distill successful evolution capsules into a high-quality, reusable Gene',
+    'that other AI agents can discover, fetch, and execute.',
     '',
-    'Analyze the following successful evolution capsules and extract a reusable Gene.',
+    '## OUTPUT FORMAT',
     '',
-    'RULES:',
-    '- Strategy steps MUST be actionable operations, NOT summaries',
-    '- Each step must be a concrete instruction an AI agent can execute',
-    '- Do NOT describe what happened; describe what TO DO next time',
-    '- The Gene MUST have a unique id starting with "' + DISTILLED_ID_PREFIX + '"',
+    'Output ONLY a single valid JSON object (no markdown fences, no explanation).',
+    '',
+    '## GENE ID RULES (CRITICAL)',
+    '',
+    '- The id MUST start with "' + DISTILLED_ID_PREFIX + '" followed by a descriptive kebab-case name.',
+    '- The suffix MUST describe the core capability in 3-6 hyphen-separated words.',
+    '- NEVER include timestamps, numeric IDs, random numbers, tool names (cursor, vscode, etc.), or UUIDs.',
+    '- Good: "gene_distilled_retry-with-exponential-backoff", "gene_distilled_database-migration-rollback"',
+    '- Bad: "gene_distilled_cursor-1773331925711", "gene_distilled_1234567890", "gene_distilled_fix-1"',
+    '',
+    '## SUMMARY RULES',
+    '',
+    '- The "summary" MUST be a clear, human-readable sentence (30-200 chars) describing',
+    '  WHAT capability this Gene provides and WHY it is useful.',
+    '- Write as if for a marketplace listing -- the summary is the first thing other agents see.',
+    '- Good: "Retry failed HTTP requests with exponential backoff, jitter, and circuit breaker to prevent cascade failures"',
+    '- Bad: "Distilled from capsules", "AI agent skill", "cursor automation", "1773331925711"',
+    '- NEVER include timestamps, build numbers, or tool names in the summary.',
+    '',
+    '## SIGNALS_MATCH RULES',
+    '',
+    '- Each signal MUST be a generic, reusable keyword that describes WHEN to trigger this Gene.',
+    '- Use lowercase_snake_case. Signals should be domain terms, not implementation artifacts.',
+    '- NEVER include timestamps, build numbers, tool names, session IDs, or random suffixes.',
+    '- Include 3-7 signals covering both the problem domain and the solution approach.',
+    '- Good: ["http_retry", "request_timeout", "exponential_backoff", "circuit_breaker", "resilience"]',
+    '- Bad: ["cursor_auto_1773331925711", "cli_headless_1773331925711", "bypass_123"]',
+    '',
+    '## STRATEGY RULES',
+    '',
+    '- Strategy steps MUST be actionable, concrete instructions an AI agent can execute.',
+    '- Each step should be a clear imperative sentence starting with a verb.',
+    '- Include 5-10 steps. Each step should be self-contained and specific.',
+    '- Do NOT describe what happened; describe what TO DO.',
+    '- Include rationale or context in parentheses when non-obvious.',
+    '- Where applicable, include inline code examples using backtick notation.',
+    '- Good: "Wrap the HTTP call in a retry loop with `maxRetries=3` and initial delay of 500ms"',
+    '- Bad: "Handle retries", "Fix the issue", "Improve reliability"',
+    '',
+    '## PRECONDITIONS RULES',
+    '',
+    '- List concrete, verifiable conditions that must be true before applying this Gene.',
+    '- Each precondition should be a testable statement, not a vague requirement.',
+    '- Good: "Project uses Node.js >= 18 with ES module support"',
+    '- Bad: "need to fix something"',
+    '',
+    '## CONSTRAINTS',
+    '',
     '- constraints.max_files MUST be <= ' + DISTILLED_MAX_FILES,
     '- constraints.forbidden_paths MUST include at least [".git", "node_modules"]',
-    '- Output valid Gene JSON only (no markdown, no explanation)',
     '',
-    'GENE ID NAMING RULES (CRITICAL):',
-    '- The id suffix (after "' + DISTILLED_ID_PREFIX + '") MUST be a descriptive kebab-case name',
-    '  derived from the strategy content or signals_match (e.g., "retry-on-timeout", "log-rotation-cleanup")',
-    '- NEVER use timestamps, random numbers, tool names (cursor, vscode, etc.), or UUIDs in the id',
-    '- Good: "gene_distilled_retry-on-timeout", "gene_distilled_cache-invalidation-strategy"',
-    '- Bad: "gene_distilled_cursor-1773331925711", "gene_distilled_1234567890", "gene_distilled_fix-1"',
-    '- The id suffix must be 3+ words separated by hyphens, describing the core capability',
+    '## VALIDATION',
     '',
-    'SUMMARY RULES:',
-    '- The "summary" field MUST be a clear, human-readable description (10-200 chars)',
-    '- It should describe WHAT the Gene does, not implementation details',
-    '- Good: "Retry failed HTTP requests with exponential backoff and circuit breaker"',
-    '- Bad: "Distilled from capsules", "AI agent skill", "cursor automation"',
+    '- Validation commands MUST start with "node ", "npm ", or "npx " (security constraint).',
+    '- Include commands that actually verify the Gene was applied correctly.',
+    '- Good: "npx tsc --noEmit", "npm test"',
+    '- Bad: "node -v" (proves nothing about the Gene)',
+    '',
+    '## QUALITY BAR',
+    '',
+    'Imagine this Gene will be published on a marketplace for thousands of AI agents.',
+    'It should be as professional and useful as a well-written library README.',
+    'Ask yourself: "Would another agent find this Gene by searching for the signals?',
+    'Would the summary make them want to fetch it? Would the strategy be enough to execute?"',
+    '',
+    '---',
     '',
     'SUCCESSFUL CAPSULES (grouped by pattern):',
     JSON.stringify(samples, null, 2),
@@ -260,7 +306,7 @@ function buildDistillationPrompt(analysis, existingGenes, sampleCapsules) {
     JSON.stringify(analysis, null, 2),
     '',
     'Output a single Gene JSON object with these fields:',
-    '{ "type": "Gene", "id": "gene_distilled_<descriptive-kebab-name>", "summary": "<clear human-readable description>", "category": "...", "signals_match": [...], "preconditions": [...], "strategy": [...], "constraints": { "max_files": N, "forbidden_paths": [...] }, "validation": [...] }',
+    '{ "type": "Gene", "id": "gene_distilled_<descriptive-kebab-name>", "summary": "<clear marketplace-quality description>", "category": "repair|optimize|innovate", "signals_match": ["generic_signal_1", ...], "preconditions": ["Concrete condition 1", ...], "strategy": ["Step 1: verb ...", "Step 2: verb ...", ...], "constraints": { "max_files": N, "forbidden_paths": [".git", "node_modules", ...] }, "validation": ["npx tsc --noEmit", ...], "schema_version": "1.6.0" }',
   ].join('\n');
 }
 
@@ -299,6 +345,34 @@ function deriveDescriptiveId(gene) {
 }
 
 // ---------------------------------------------------------------------------
+// Step 4: sanitizeSignalsMatch -- strip timestamps, random suffixes, tool names
+// ---------------------------------------------------------------------------
+function sanitizeSignalsMatch(signals) {
+  if (!Array.isArray(signals)) return [];
+  var cleaned = [];
+  signals.forEach(function (s) {
+    var sig = String(s || '').trim().toLowerCase();
+    if (!sig) return;
+    // Strip trailing timestamps (10+ digits) and random suffixes
+    sig = sig.replace(/[_-]\d{10,}$/g, '');
+    // Strip leading/trailing underscores/hyphens left over
+    sig = sig.replace(/^[_-]+|[_-]+$/g, '');
+    // Reject signals that are purely numeric
+    if (/^\d+$/.test(sig)) return;
+    // Reject signals that are just a tool name with optional number
+    if (/^(cursor|vscode|vim|emacs|windsurf|copilot|cline|codex|bypass|distill)[_-]?\d*$/i.test(sig)) return;
+    // Reject signals shorter than 3 chars after cleaning
+    if (sig.length < 3) return;
+    // Reject signals that still contain long numeric sequences (session IDs, etc.)
+    if (/\d{8,}/.test(sig)) return;
+    cleaned.push(sig);
+  });
+  // Deduplicate
+  var seen = {};
+  return cleaned.filter(function (s) { if (seen[s]) return false; seen[s] = true; return true; });
+}
+
+// ---------------------------------------------------------------------------
 // Step 4: validateSynthesizedGene
 // ---------------------------------------------------------------------------
 function validateSynthesizedGene(gene, existingGenes) {
@@ -311,16 +385,34 @@ function validateSynthesizedGene(gene, existingGenes) {
   if (!Array.isArray(gene.signals_match) || gene.signals_match.length === 0) errors.push('missing or empty signals_match');
   if (!Array.isArray(gene.strategy) || gene.strategy.length === 0) errors.push('missing or empty strategy');
 
+  // --- Signals sanitization (BEFORE id derivation so deriveDescriptiveId uses clean signals) ---
+  if (Array.isArray(gene.signals_match)) {
+    gene.signals_match = sanitizeSignalsMatch(gene.signals_match);
+    if (gene.signals_match.length === 0) {
+      errors.push('signals_match is empty after sanitization (all signals were invalid)');
+    }
+  }
+
+  // --- Summary sanitization (BEFORE id derivation so deriveDescriptiveId uses clean summary) ---
+  if (gene.summary) {
+    gene.summary = gene.summary.replace(/\s*\d{10,}\s*$/g, '').replace(/\.\s*\d{10,}/g, '.').trim();
+  }
+
+  // --- ID sanitization ---
   if (gene.id && !String(gene.id).startsWith(DISTILLED_ID_PREFIX)) {
     gene.id = DISTILLED_ID_PREFIX + String(gene.id).replace(/^gene_/, '');
   }
 
   if (gene.id) {
     var suffix = String(gene.id).replace(DISTILLED_ID_PREFIX, '');
+    // Strip ALL embedded timestamps (10+ digit sequences) anywhere in the id
+    suffix = suffix.replace(/[-_]?\d{10,}[-_]?/g, '-').replace(/[-_]+/g, '-').replace(/^[-_]+|[-_]+$/g, '');
     var needsRename = /^\d+$/.test(suffix) || /^\d{10,}/.test(suffix)
-      || /^(cursor|vscode|vim|emacs|windsurf|copilot|cline|codex)[-_]?\d*/i.test(suffix);
+      || /^(cursor|vscode|vim|emacs|windsurf|copilot|cline|codex)[-_]?\d*$/i.test(suffix);
     if (needsRename) {
       gene.id = deriveDescriptiveId(gene);
+    } else {
+      gene.id = DISTILLED_ID_PREFIX + suffix;
     }
     var cleanSuffix = String(gene.id).replace(DISTILLED_ID_PREFIX, '');
     if (cleanSuffix.replace(/[-_]/g, '').length < 6) {
@@ -328,6 +420,7 @@ function validateSynthesizedGene(gene, existingGenes) {
     }
   }
 
+  // --- Summary fallback (summary was already sanitized above, this handles missing/short) ---
   if (!gene.summary || typeof gene.summary !== 'string' || gene.summary.length < 10) {
     if (Array.isArray(gene.strategy) && gene.strategy.length > 0) {
       gene.summary = String(gene.strategy[0]).slice(0, 200);
@@ -336,6 +429,12 @@ function validateSynthesizedGene(gene, existingGenes) {
     }
   }
 
+  // --- Strategy quality: require minimum 3 steps ---
+  if (Array.isArray(gene.strategy) && gene.strategy.length < 3) {
+    errors.push('strategy must have at least 3 steps for a quality skill');
+  }
+
+  // --- Constraints ---
   if (!gene.constraints || typeof gene.constraints !== 'object') gene.constraints = {};
   if (!Array.isArray(gene.constraints.forbidden_paths) || gene.constraints.forbidden_paths.length === 0) {
     gene.constraints.forbidden_paths = ['.git', 'node_modules'];
@@ -347,6 +446,7 @@ function validateSynthesizedGene(gene, existingGenes) {
     gene.constraints.max_files = DISTILLED_MAX_FILES;
   }
 
+  // --- Validation command sanitization ---
   var ALLOWED_PREFIXES = ['node ', 'npm ', 'npx '];
   if (Array.isArray(gene.validation)) {
     gene.validation = gene.validation.filter(function (cmd) {
@@ -359,11 +459,16 @@ function validateSynthesizedGene(gene, existingGenes) {
     });
   }
 
+  // --- Schema version ---
+  if (!gene.schema_version) gene.schema_version = '1.6.0';
+
+  // --- Duplicate ID check ---
   var existingIds = new Set((existingGenes || []).map(function (g) { return g.id; }));
   if (gene.id && existingIds.has(gene.id)) {
     gene.id = gene.id + '_' + Date.now().toString(36);
   }
 
+  // --- Signal overlap check ---
   if (gene.signals_match && existingGenes && existingGenes.length > 0) {
     var newSet = new Set(gene.signals_match.map(function (s) { return String(s).toLowerCase(); }));
     for (var i = 0; i < existingGenes.length; i++) {
@@ -566,6 +671,7 @@ module.exports = {
   prepareDistillation: prepareDistillation,
   completeDistillation: completeDistillation,
   validateSynthesizedGene: validateSynthesizedGene,
+  sanitizeSignalsMatch: sanitizeSignalsMatch,
   shouldDistill: shouldDistill,
   buildDistillationPrompt: buildDistillationPrompt,
   extractJsonFromLlmResponse: extractJsonFromLlmResponse,
