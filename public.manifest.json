@@ -49,14 +49,6 @@
         }
       ]
     },
-    "index.js": {
-      "replace": [
-        {
-          "from": "path.resolve(__dirname, '../../.env')",
-          "to": "path.resolve(__dirname, './.env')"
-        }
-      ]
-    },
     "README.zh-CN.md": {
       "replace": [
         {

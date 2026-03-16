@@ -778,6 +778,7 @@ module.exports = {
   consumeOverdueTasks,
   getSkillStoreHint,
   queueCommitmentUpdate,
+  getHubUrl,
   getHubNodeSecret,
   buildHubHeaders,
   getNoveltyHint,

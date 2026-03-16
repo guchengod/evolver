@@ -467,6 +467,100 @@ async function main() {
       console.log('To reject and rollback:   node index.js review --reject');
     }
 
+  } else if (command === 'fetch') {
+    const skillFlag = args.find(a => typeof a === 'string' && (a.startsWith('--skill=') || a.startsWith('-s=')));
+    const skillPositional = skillFlag ? null : args[1];
+    const shortFlag = args.indexOf('-s');
+    const skillId = skillFlag
+      ? skillFlag.split('=')[1]
+      : (shortFlag !== -1 && args[shortFlag + 1] ? args[shortFlag + 1] : skillPositional);
+
+    if (!skillId) {
+      console.error('Usage: evolver fetch --skill <skill_id>');
+      console.error('       evolver fetch -s <skill_id>');
+      process.exit(1);
+    }
+
+    const { getHubUrl, getNodeId, buildHubHeaders, sendHelloToHub, getHubNodeSecret } = require('./src/gep/a2aProtocol');
+
+    const hubUrl = getHubUrl();
+    if (!hubUrl) {
+      console.error('[fetch] A2A_HUB_URL is not configured.');
+      console.error('Set it via environment variable or .env file:');
+      console.error('  export A2A_HUB_URL=https://hub.evomap.ai');
+      process.exit(1);
+    }
+
+    try {
+      if (!getHubNodeSecret()) {
+        console.log('[fetch] No node_secret found. Sending hello to Hub to register...');
+        const helloResult = await sendHelloToHub();
+        if (!helloResult || !helloResult.ok) {
+          console.error('[fetch] Failed to register with Hub:', helloResult && helloResult.error || 'unknown');
+          process.exit(1);
+        }
+        console.log('[fetch] Registered as ' + getNodeId());
+      }
+
+      const endpoint = hubUrl.replace(/\/+$/, '') + '/a2a/skill/store/' + encodeURIComponent(skillId) + '/download';
+      const nodeId = getNodeId();
+
+      console.log('[fetch] Downloading skill: ' + skillId);
+
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: buildHubHeaders(),
+        body: JSON.stringify({ sender_id: nodeId }),
+        signal: AbortSignal.timeout(30000),
+      });
+
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => '');
+        let msg = 'HTTP ' + resp.status;
+        try { const j = JSON.parse(body); msg = j.error || j.message || msg; } catch (_) {}
+        console.error('[fetch] Download failed: ' + msg);
+        if (resp.status === 404) console.error('  Skill not found or not publicly available.');
+        if (resp.status === 401) console.error('  Authentication failed. Try deleting ~/.evomap/node_secret and retry.');
+        if (resp.status === 402) console.error('  Insufficient credits.');
+        process.exit(1);
+      }
+
+      const data = await resp.json();
+      const outDir = args.find(a => typeof a === 'string' && a.startsWith('--out='))
+        ? args.find(a => a.startsWith('--out=')).slice('--out='.length)
+        : path.join('.', 'skills', data.skill_id || skillId);
+
+      if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+
+      if (data.content) {
+        fs.writeFileSync(path.join(outDir, 'SKILL.md'), data.content, 'utf8');
+      }
+
+      const bundled = Array.isArray(data.bundled_files) ? data.bundled_files : [];
+      for (const file of bundled) {
+        if (!file || !file.name || typeof file.content !== 'string') continue;
+        const safeName = path.basename(file.name);
+        fs.writeFileSync(path.join(outDir, safeName), file.content, 'utf8');
+      }
+
+      console.log('[fetch] Skill downloaded to: ' + outDir);
+      console.log('  Name:    ' + (data.name || skillId));
+      console.log('  Version: ' + (data.version || '?'));
+      console.log('  Files:   SKILL.md' + (bundled.length > 0 ? ', ' + bundled.map(f => f.name).join(', ') : ''));
+      if (data.already_purchased) {
+        console.log('  Cost:    free (already purchased)');
+      } else {
+        console.log('  Cost:    ' + (data.credit_cost || 0) + ' credits');
+      }
+    } catch (error) {
+      if (error && error.name === 'TimeoutError') {
+        console.error('[fetch] Request timed out. Check your network and A2A_HUB_URL.');
+      } else {
+        console.error('[fetch] Error:', error && error.message || error);
+      }
+      process.exit(1);
+    }
+
   } else if (command === 'asset-log') {
     const { summarizeCallLog, readCallLog, getLogPath } = require('./src/gep/assetCallLog');
 
@@ -511,7 +605,10 @@ async function main() {
     }
 
   } else {
-    console.log(`Usage: node index.js [run|/evolve|solidify|review|distill|asset-log] [--loop]
+    console.log(`Usage: node index.js [run|/evolve|solidify|review|distill|fetch|asset-log] [--loop]
+  - fetch flags:
+    - --skill=<id> | -s <id>   (skill ID to download)
+    - --out=<dir>              (output directory, default: ./skills/<skill_id>)
   - solidify flags:
     - --dry-run
     - --no-rollback
