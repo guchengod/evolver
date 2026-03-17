@@ -1,3 +1,4 @@
+// Structured learning signal expansion: raw signals -> categorized tags for gene selection and evolution feedback.
 function unique(items) {
   return Array.from(new Set((Array.isArray(items) ? items : []).filter(Boolean).map(function (x) {
     return String(x).trim();
