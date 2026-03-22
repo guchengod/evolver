@@ -44,10 +44,10 @@ const { expandSignals } = require('./gep/learningSignals');
 
 const REPO_ROOT = getRepoRoot();
 
-// Verbose logging helper. Checks EVOLVER_VERBOSE env var (set by --verbose flag in index.js).
+// Verbose logging helper. Checks EVOLVER_VERBOSE env const (set by --verbose flag in index.js).
 function verbose() {
   if (String(process.env.EVOLVER_VERBOSE || '').toLowerCase() !== 'true') return;
-  var args = Array.prototype.slice.call(arguments);
+  const args = Array.prototype.slice.call(arguments);
   args.unshift('[Verbose]');
   console.log.apply(console, args);
 }
@@ -55,24 +55,24 @@ function verbose() {
 // Idle-cycle gating: track last Hub fetch to avoid redundant API calls during saturation.
 // When evolver is saturated (no actionable signals), Hub calls are throttled to at most
 // once per EVOLVER_IDLE_FETCH_INTERVAL_MS (default 30 min) instead of every cycle.
-var _lastHubFetchMs = 0;
+let _lastHubFetchMs = 0;
 
 function shouldSkipHubCalls(signals) {
   if (!Array.isArray(signals)) return false;
-  var saturationIndicators = ['force_steady_state', 'evolution_saturation', 'empty_cycle_loop_detected'];
-  var hasSaturation = false;
-  for (var si = 0; si < saturationIndicators.length; si++) {
+  const saturationIndicators = ['force_steady_state', 'evolution_saturation', 'empty_cycle_loop_detected'];
+  let hasSaturation = false;
+  for (let si = 0; si < saturationIndicators.length; si++) {
     if (signals.indexOf(saturationIndicators[si]) !== -1) { hasSaturation = true; break; }
   }
   if (!hasSaturation) return false;
 
-  var actionablePatterns = [
+  const actionablePatterns = [
     'log_error', 'recurring_error', 'capability_gap', 'perf_bottleneck',
     'external_task', 'bounty_task', 'overdue_task', 'urgent',
     'unsupported_input_type',
   ];
-  for (var ai = 0; ai < signals.length; ai++) {
-    var s = signals[ai];
+  for (let ai = 0; ai < signals.length; ai++) {
+    const s = signals[ai];
     if (actionablePatterns.indexOf(s) !== -1) return false;
     if (s.indexOf('errsig:') === 0) return false;
     if (s.indexOf('user_feature_request:') === 0 && s.length > 21) return false;
@@ -556,14 +556,14 @@ function getMutationDirective(logContent) {
 
 const STATE_FILE = path.join(getEvolutionDir(), 'evolution_state.json');
 const DORMANT_HYPOTHESIS_FILE = path.join(getEvolutionDir(), 'dormant_hypothesis.json');
-var DORMANT_TTL_MS = 3600 * 1000;
+const DORMANT_TTL_MS = 3600 * 1000;
 
 function writeDormantHypothesis(data) {
   try {
-    var dir = getEvolutionDir();
+    const dir = getEvolutionDir();
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    var obj = Object.assign({}, data, { created_at: new Date().toISOString(), ttl_ms: DORMANT_TTL_MS });
-    var tmp = DORMANT_HYPOTHESIS_FILE + '.tmp';
+    const obj = Object.assign({}, data, { created_at: new Date().toISOString(), ttl_ms: DORMANT_TTL_MS });
+    const tmp = DORMANT_HYPOTHESIS_FILE + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', 'utf8');
     fs.renameSync(tmp, DORMANT_HYPOTHESIS_FILE);
     console.log('[DormantHypothesis] Saved partial state before backoff: ' + (data.backoff_reason || 'unknown'));
@@ -575,11 +575,11 @@ function writeDormantHypothesis(data) {
 function readDormantHypothesis() {
   try {
     if (!fs.existsSync(DORMANT_HYPOTHESIS_FILE)) return null;
-    var raw = fs.readFileSync(DORMANT_HYPOTHESIS_FILE, 'utf8');
+    const raw = fs.readFileSync(DORMANT_HYPOTHESIS_FILE, 'utf8');
     if (!raw.trim()) return null;
-    var obj = JSON.parse(raw);
-    var createdAt = obj.created_at ? new Date(obj.created_at).getTime() : 0;
-    var ttl = Number.isFinite(Number(obj.ttl_ms)) ? Number(obj.ttl_ms) : DORMANT_TTL_MS;
+    const obj = JSON.parse(raw);
+    const createdAt = obj.created_at ? new Date(obj.created_at).getTime() : 0;
+    const ttl = Number.isFinite(Number(obj.ttl_ms)) ? Number(obj.ttl_ms) : DORMANT_TTL_MS;
     if (Date.now() - createdAt > ttl) {
       clearDormantHypothesis();
       console.log('[DormantHypothesis] Expired (age: ' + Math.round((Date.now() - createdAt) / 1000) + 's). Discarded.');
@@ -974,7 +974,7 @@ async function run() {
     return;
   }
 
-  var dormantHypothesis = readDormantHypothesis();
+  const dormantHypothesis = readDormantHypothesis();
   if (dormantHypothesis) {
     console.log('[DormantHypothesis] Recovered partial state from previous backoff: ' + (dormantHypothesis.backoff_reason || 'unknown'));
     clearDormantHypothesis();
@@ -1186,9 +1186,9 @@ async function run() {
   verbose('Recent events: ' + recentEvents.length + ', session log size: ' + recentMasterLog.length + ' chars');
 
   if (dormantHypothesis && Array.isArray(dormantHypothesis.signals) && dormantHypothesis.signals.length > 0) {
-    var dormantSignals = dormantHypothesis.signals;
-    var injected = 0;
-    for (var dsi = 0; dsi < dormantSignals.length; dsi++) {
+    const dormantSignals = dormantHypothesis.signals;
+    let injected = 0;
+    for (let dsi = 0; dsi < dormantSignals.length; dsi++) {
       if (!signals.includes(dormantSignals[dsi])) {
         signals.push(dormantSignals[dsi]);
         injected++;
@@ -1200,12 +1200,12 @@ async function run() {
   }
 
   // --- Idle-cycle gating: skip Hub API calls during saturation to save credits ---
-  var _idleFetchInterval = parseInt(String(process.env.EVOLVER_IDLE_FETCH_INTERVAL_MS || ''), 10);
+  let _idleFetchInterval = parseInt(String(process.env.EVOLVER_IDLE_FETCH_INTERVAL_MS || ''), 10);
   if (!Number.isFinite(_idleFetchInterval) || _idleFetchInterval <= 0) _idleFetchInterval = 1800000;
-  var skipHubCalls = false;
+  let skipHubCalls = false;
 
   if (shouldSkipHubCalls(signals)) {
-    var _elapsed = Date.now() - _lastHubFetchMs;
+    const _elapsed = Date.now() - _lastHubFetchMs;
     if (_lastHubFetchMs > 0 && _elapsed < _idleFetchInterval) {
       skipHubCalls = true;
       console.log('[IdleGating] Saturated with no actionable signals. Skipping Hub API calls (last fetch ' + Math.round(_elapsed / 1000) + 's ago, threshold ' + Math.round(_idleFetchInterval / 1000) + 's).');
@@ -1543,7 +1543,7 @@ async function run() {
     console.log('[Reflection] Failed (non-fatal): ' + (e && e.message ? e.message : e));
   }
 
-  var recentFailedCapsules = [];
+  let recentFailedCapsules = [];
   try {
     recentFailedCapsules = readRecentFailedCapsules(50);
   } catch (e) {
@@ -1551,10 +1551,10 @@ async function run() {
   }
 
   // Heartbeat hints: novelty score and capability gaps for diversity-directed drift
-  var heartbeatNovelty = null;
-  var heartbeatCapGaps = [];
+  let heartbeatNovelty = null;
+  let heartbeatCapGaps = [];
   try {
-    var { getNoveltyHint, getCapabilityGaps: getCapGaps } = require('./gep/a2aProtocol');
+    const { getNoveltyHint, getCapabilityGaps: getCapGaps } = require('./gep/a2aProtocol');
     heartbeatNovelty = getNoveltyHint();
     heartbeatCapGaps = getCapGaps() || [];
   } catch (e) {}

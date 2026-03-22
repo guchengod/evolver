@@ -309,10 +309,10 @@ function checkConstraints({ gene, blast, blastRadiusEstimate, repoRoot }) {
   // This prevents the "evolver modifies itself and introduces bugs" problem.
   // To opt in to self-modification (NOT recommended for production):
   //   set EVOLVE_ALLOW_SELF_MODIFY=true in environment.
-  var allowSelfModify = String(process.env.EVOLVE_ALLOW_SELF_MODIFY || '').toLowerCase() === 'true';
+  const allowSelfModify = String(process.env.EVOLVE_ALLOW_SELF_MODIFY || '').toLowerCase() === 'true';
   for (const f of blast.all_changed_files || blast.changed_files || []) {
     if (isCriticalProtectedPath(f)) {
-      var norm = normalizeRelPath(f);
+      const norm = normalizeRelPath(f);
       if (allowSelfModify && norm.startsWith('skills/evolver/') && gene && gene.category === 'repair') {
         // Self-modify opt-in: allow repair-only changes to evolver when explicitly enabled
         warnings.push('self_modify_evolver_repair: ' + norm + ' (EVOLVE_ALLOW_SELF_MODIFY=true)');
@@ -327,19 +327,19 @@ function checkConstraints({ gene, blast, blastRadiusEstimate, repoRoot }) {
   // This catches the "empty directory" problem where AI creates skills/<name>/ but
   // fails to write any code into it. A real skill needs at least index.js + SKILL.md.
   if (repoRoot) {
-    var newSkillDirs = new Set();
-    var changedList = blast.all_changed_files || blast.changed_files || [];
-    for (var sci = 0; sci < changedList.length; sci++) {
-      var scNorm = normalizeRelPath(changedList[sci]);
-      var scMatch = scNorm.match(/^skills\/([^\/]+)\//);
+    const newSkillDirs = new Set();
+    const changedList = blast.all_changed_files || blast.changed_files || [];
+    for (let sci = 0; sci < changedList.length; sci++) {
+      const scNorm = normalizeRelPath(changedList[sci]);
+      const scMatch = scNorm.match(/^skills\/([^\/]+)\//);
       if (scMatch && !isCriticalProtectedPath(scNorm)) {
         newSkillDirs.add(scMatch[1]);
       }
     }
     newSkillDirs.forEach(function (skillName) {
-      var skillDir = path.join(repoRoot, 'skills', skillName);
+      const skillDir = path.join(repoRoot, 'skills', skillName);
       try {
-        var entries = fs.readdirSync(skillDir).filter(function (e) { return !e.startsWith('.'); });
+        const entries = fs.readdirSync(skillDir).filter(function (e) { return !e.startsWith('.'); });
         if (entries.length < 2) {
           warnings.push('incomplete_skill: skills/' + skillName + '/ has only ' + entries.length + ' file(s). New skills should have at least index.js + SKILL.md.');
         }
@@ -350,7 +350,7 @@ function checkConstraints({ gene, blast, blastRadiusEstimate, repoRoot }) {
   }
 
   // --- Ethics Committee: constitutional principle enforcement ---
-  var ethicsText = '';
+  let ethicsText = '';
   if (gene.strategy) {
     ethicsText += (Array.isArray(gene.strategy) ? gene.strategy.join(' ') : String(gene.strategy)) + ' ';
   }
@@ -358,14 +358,14 @@ function checkConstraints({ gene, blast, blastRadiusEstimate, repoRoot }) {
   if (gene.summary) ethicsText += String(gene.summary) + ' ';
 
   if (ethicsText.length > 0) {
-    var ethicsBlockPatterns = [
+    const ethicsBlockPatterns = [
       { re: /(?:bypass|disable|circumvent|remove)\s+(?:safety|guardrail|security|ethic|constraint|protection)/i, rule: 'safety', msg: 'ethics: strategy attempts to bypass safety mechanisms' },
       { re: /(?:keylogger|screen\s*capture|webcam\s*hijack|mic(?:rophone)?\s*record)/i, rule: 'human_welfare', msg: 'ethics: covert monitoring tool in strategy' },
       { re: /(?:social\s+engineering|phishing)\s+(?:attack|template|script)/i, rule: 'human_welfare', msg: 'ethics: social engineering content in strategy' },
       { re: /(?:exploit|hack)\s+(?:user|human|people|victim)/i, rule: 'human_welfare', msg: 'ethics: human exploitation in strategy' },
       { re: /(?:hide|conceal|obfuscat)\w*\s+(?:action|behavior|intent|log)/i, rule: 'transparency', msg: 'ethics: strategy conceals actions from audit trail' },
     ];
-    for (var ei = 0; ei < ethicsBlockPatterns.length; ei++) {
+    for (let ei = 0; ei < ethicsBlockPatterns.length; ei++) {
       if (ethicsBlockPatterns[ei].re.test(ethicsText)) {
         violations.push(ethicsBlockPatterns[ei].msg);
         console.error('[Solidify] Ethics violation: ' + ethicsBlockPatterns[ei].msg);
@@ -630,15 +630,15 @@ function runCanaryCheck(opts) {
   };
 }
 
-var DIFF_SNAPSHOT_MAX_CHARS = 8000;
+const DIFF_SNAPSHOT_MAX_CHARS = 8000;
 
 function captureDiffSnapshot(repoRoot) {
-  var parts = [];
-  var unstaged = tryRunCmd('git diff', { cwd: repoRoot, timeoutMs: 30000 });
+  const parts = [];
+  const unstaged = tryRunCmd('git diff', { cwd: repoRoot, timeoutMs: 30000 });
   if (unstaged.ok && unstaged.out) parts.push(String(unstaged.out));
-  var staged = tryRunCmd('git diff --cached', { cwd: repoRoot, timeoutMs: 30000 });
+  const staged = tryRunCmd('git diff --cached', { cwd: repoRoot, timeoutMs: 30000 });
   if (staged.ok && staged.out) parts.push(String(staged.out));
-  var combined = parts.join('\n');
+  const combined = parts.join('\n');
   if (combined.length > DIFF_SNAPSHOT_MAX_CHARS) {
     combined = combined.slice(0, DIFF_SNAPSHOT_MAX_CHARS) + '\n... [TRUNCATED]';
   }
@@ -646,20 +646,20 @@ function captureDiffSnapshot(repoRoot) {
 }
 
 function buildFailureReason(constraintCheck, validation, protocolViolations, canary) {
-  var reasons = [];
+  const reasons = [];
   if (constraintCheck && Array.isArray(constraintCheck.violations)) {
-    for (var i = 0; i < constraintCheck.violations.length; i++) {
+    for (let i = 0; i < constraintCheck.violations.length; i++) {
       reasons.push('constraint: ' + constraintCheck.violations[i]);
     }
   }
   if (Array.isArray(protocolViolations)) {
-    for (var j = 0; j < protocolViolations.length; j++) {
+    for (let j = 0; j < protocolViolations.length; j++) {
       reasons.push('protocol: ' + protocolViolations[j]);
     }
   }
   if (validation && Array.isArray(validation.results)) {
-    for (var k = 0; k < validation.results.length; k++) {
-      var r = validation.results[k];
+    for (let k = 0; k < validation.results.length; k++) {
+      const r = validation.results[k];
       if (r && !r.ok) {
         reasons.push('validation_failed: ' + String(r.cmd || '').slice(0, 120) + ' => ' + String(r.err || '').slice(0, 200));
       }
@@ -673,11 +673,11 @@ function buildFailureReason(constraintCheck, validation, protocolViolations, can
 
 function buildSoftFailureLearningSignals(opts) {
   const { expandSignals } = require('./learningSignals');
-  var signals = opts && Array.isArray(opts.signals) ? opts.signals : [];
-  var failureReason = opts && opts.failureReason ? String(opts.failureReason) : '';
-  var violations = opts && Array.isArray(opts.violations) ? opts.violations : [];
-  var validationResults = opts && Array.isArray(opts.validationResults) ? opts.validationResults : [];
-  var validationText = validationResults
+  const signals = opts && Array.isArray(opts.signals) ? opts.signals : [];
+  const failureReason = opts && opts.failureReason ? String(opts.failureReason) : '';
+  const violations = opts && Array.isArray(opts.violations) ? opts.violations : [];
+  const validationResults = opts && Array.isArray(opts.validationResults) ? opts.validationResults : [];
+  const validationText = validationResults
     .filter(function (r) { return r && r.ok === false; })
     .map(function (r) { return [r.cmd, r.stderr, r.stdout].filter(Boolean).join(' '); })
     .join(' ');
@@ -688,13 +688,13 @@ function buildSoftFailureLearningSignals(opts) {
 }
 
 function classifyFailureMode(opts) {
-  var constraintViolations = opts && Array.isArray(opts.constraintViolations) ? opts.constraintViolations : [];
-  var protocolViolations = opts && Array.isArray(opts.protocolViolations) ? opts.protocolViolations : [];
-  var validation = opts && opts.validation ? opts.validation : null;
-  var canary = opts && opts.canary ? opts.canary : null;
+  const constraintViolations = opts && Array.isArray(opts.constraintViolations) ? opts.constraintViolations : [];
+  const protocolViolations = opts && Array.isArray(opts.protocolViolations) ? opts.protocolViolations : [];
+  const validation = opts && opts.validation ? opts.validation : null;
+  const canary = opts && opts.canary ? opts.canary : null;
 
   if (constraintViolations.some(function (v) {
-    var s = String(v || '');
+    const s = String(v || '');
     return /HARD CAP BREACH|CRITICAL_FILE_|critical_path_modified|forbidden_path touched|ethics:/i.test(s);
   })) {
     return { mode: 'hard', reasonClass: 'constraint_destructive', retryable: false };
@@ -720,22 +720,22 @@ function classifyFailureMode(opts) {
 }
 
 function adaptGeneFromLearning(opts) {
-  var gene = opts && opts.gene && opts.gene.type === 'Gene' ? opts.gene : null;
+  const gene = opts && opts.gene && opts.gene.type === 'Gene' ? opts.gene : null;
   if (!gene) return gene;
 
-  var outcomeStatus = String(opts && opts.outcomeStatus || '').toLowerCase();
-  var learningSignals = Array.isArray(opts && opts.learningSignals) ? opts.learningSignals : [];
-  var failureMode = opts && opts.failureMode && typeof opts.failureMode === 'object'
+  const outcomeStatus = String(opts && opts.outcomeStatus || '').toLowerCase();
+  const learningSignals = Array.isArray(opts && opts.learningSignals) ? opts.learningSignals : [];
+  const failureMode = opts && opts.failureMode && typeof opts.failureMode === 'object'
     ? opts.failureMode
     : { mode: 'soft', reasonClass: 'unknown', retryable: true };
 
   if (!Array.isArray(gene.learning_history)) gene.learning_history = [];
   if (!Array.isArray(gene.signals_match)) gene.signals_match = [];
 
-  var seenSignal = new Set(gene.signals_match.map(function (s) { return String(s); }));
+  const seenSignal = new Set(gene.signals_match.map(function (s) { return String(s); }));
   if (outcomeStatus === 'success') {
-    for (var i = 0; i < learningSignals.length; i++) {
-      var sig = String(learningSignals[i] || '');
+    for (let i = 0; i < learningSignals.length; i++) {
+      const sig = String(learningSignals[i] || '');
       if (!sig || seenSignal.has(sig)) continue;
       if (sig.indexOf('problem:') === 0 || sig.indexOf('area:') === 0) {
         gene.signals_match.push(sig);
@@ -758,7 +758,7 @@ function adaptGeneFromLearning(opts) {
 
   if (outcomeStatus === 'failed') {
     if (!Array.isArray(gene.anti_patterns)) gene.anti_patterns = [];
-    var anti = {
+    const anti = {
       at: nowIso(),
       mode: failureMode.mode || 'soft',
       reason_class: failureMode.reasonClass || 'unknown',
@@ -841,24 +841,24 @@ function rollbackNewUntrackedFiles({ repoRoot, baselineUntracked }) {
   // skills/anima/, skills/oblivion/ etc. accumulate after failed innovations.
   // SAFETY: never remove top-level structural directories (skills/, src/, etc.)
   // or critical protected directories. Only remove leaf subdirectories.
-  var dirsToCheck = new Set();
-  for (var di = 0; di < deleted.length; di++) {
-    var dir = path.dirname(deleted[di]);
+  const dirsToCheck = new Set();
+  for (let di = 0; di < deleted.length; di++) {
+    const dir = path.dirname(deleted[di]);
     while (dir && dir !== '.' && dir !== '/') {
-      var normalized = dir.replace(/\\/g, '/');
+      const normalized = dir.replace(/\\/g, '/');
       if (!normalized.includes('/')) break;
       dirsToCheck.add(dir);
       dir = path.dirname(dir);
     }
   }
   // Sort deepest first to ensure children are removed before parents
-  var sortedDirs = Array.from(dirsToCheck).sort(function (a, b) { return b.length - a.length; });
-  var removedDirs = [];
-  for (var si = 0; si < sortedDirs.length; si++) {
+  const sortedDirs = Array.from(dirsToCheck).sort(function (a, b) { return b.length - a.length; });
+  const removedDirs = [];
+  for (let si = 0; si < sortedDirs.length; si++) {
     if (isCriticalProtectedPath(sortedDirs[si] + '/')) continue;
-    var dirAbs = path.join(repoRoot, sortedDirs[si]);
+    const dirAbs = path.join(repoRoot, sortedDirs[si]);
     try {
-      var entries = fs.readdirSync(dirAbs);
+      const entries = fs.readdirSync(dirAbs);
       if (entries.length === 0) {
         fs.rmdirSync(dirAbs);
         removedDirs.push(sortedDirs[si]);
@@ -908,10 +908,10 @@ function buildSuccessReason({ gene, signals, blast, mutation, score }) {
   return parts.join(' ').slice(0, 1000) || 'Evolution succeeded.';
 }
 
-var CAPSULE_CONTENT_MAX_CHARS = 8000;
+const CAPSULE_CONTENT_MAX_CHARS = 8000;
 
 function buildCapsuleContent({ intent, gene, signals, blast, mutation, score }) {
-  var parts = [];
+  const parts = [];
 
   if (intent) {
     parts.push('Intent: ' + String(intent).slice(0, 500));
@@ -930,7 +930,7 @@ function buildCapsuleContent({ intent, gene, signals, blast, mutation, score }) 
   }
 
   if (blast) {
-    var fileList = blast.changed_files || blast.all_changed_files || [];
+    const fileList = blast.changed_files || blast.all_changed_files || [];
     parts.push('Scope: ' + blast.files + ' file(s), ' + blast.lines + ' line(s)');
     if (fileList.length > 0) {
       parts.push('Changed files:\n' + fileList.slice(0, 20).join('\n'));
@@ -945,7 +945,7 @@ function buildCapsuleContent({ intent, gene, signals, blast, mutation, score }) 
     parts.push('Outcome score: ' + score.toFixed(2));
   }
 
-  var result = parts.join('\n\n');
+  let result = parts.join('\n\n');
   if (result.length > CAPSULE_CONTENT_MAX_CHARS) {
     result = result.slice(0, CAPSULE_CONTENT_MAX_CHARS) + '\n... [TRUNCATED]';
   }
@@ -1415,9 +1415,9 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
   // Capture failed mutation as a FailedCapsule before rollback destroys the diff.
   if (!dryRun && !success) {
     try {
-      var diffSnapshot = captureDiffSnapshot(repoRoot);
+      const diffSnapshot = captureDiffSnapshot(repoRoot);
       if (diffSnapshot) {
-        var failedCapsule = {
+        const failedCapsule = {
           type: 'Capsule',
           schema_version: SCHEMA_VERSION,
           id: 'failed_' + buildCapsuleId(ts),
@@ -1537,7 +1537,7 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
         if (hubUrl) {
           // Hub requires bundle format: Gene + Capsule published together.
           // Build a Gene object from geneUsed if available; otherwise synthesize a minimal Gene.
-          var publishGene = null;
+          const publishGene = null;
           if (geneUsed && geneUsed.type === 'Gene' && geneUsed.id) {
             publishGene = sanitizePayload(geneUsed);
           } else {
@@ -1549,34 +1549,34 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
               summary: capsule.summary || '',
             };
           }
-          var parentRef = reusedAssetId && sourceType === 'reference' && String(reusedAssetId).startsWith('sha256:')
+          const parentRef = reusedAssetId && sourceType === 'reference' && String(reusedAssetId).startsWith('sha256:')
             ? reusedAssetId : null;
           if (parentRef) {
             publishGene.parent = parentRef;
           }
           publishGene.asset_id = computeAssetId(publishGene);
 
-          var sanitizedCapsule = sanitizePayload(capsule);
+          const sanitizedCapsule = sanitizePayload(capsule);
           if (parentRef) {
             sanitizedCapsule.parent = parentRef;
           }
           sanitizedCapsule.asset_id = computeAssetId(sanitizedCapsule);
 
-          var sanitizedEvent = (event && event.type === 'EvolutionEvent') ? sanitizePayload(event) : null;
+          const sanitizedEvent = (event && event.type === 'EvolutionEvent') ? sanitizePayload(event) : null;
           if (sanitizedEvent) sanitizedEvent.asset_id = computeAssetId(sanitizedEvent);
 
-          var publishChainId = reusedChainId || null;
+          const publishChainId = reusedChainId || null;
 
-          var evolverModelName = (process.env.EVOLVER_MODEL_NAME || '').trim().slice(0, 100);
+          const evolverModelName = (process.env.EVOLVER_MODEL_NAME || '').trim().slice(0, 100);
 
-          var msg = buildPublishBundle({
+          const msg = buildPublishBundle({
             gene: publishGene,
             capsule: sanitizedCapsule,
             event: sanitizedEvent,
             chainId: publishChainId,
             modelName: evolverModelName || undefined,
           });
-          var result = httpTransportSend(msg, { hubUrl });
+          const result = httpTransportSend(msg, { hubUrl });
           // httpTransportSend returns a Promise
           if (result && typeof result.then === 'function') {
             result
@@ -1635,23 +1635,23 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
   // Publish high-information-value failures to the Hub as anti-pattern assets.
   // Only enabled via EVOLVER_PUBLISH_ANTI_PATTERNS=true (opt-in).
   // Only constraint violations or canary failures qualify (not routine validation failures).
-  var antiPatternPublishResult = null;
+  let antiPatternPublishResult = null;
   if (!dryRun && !success) {
-    var publishAntiPatterns = String(process.env.EVOLVER_PUBLISH_ANTI_PATTERNS || '').toLowerCase() === 'true';
-    var hubUrl = (process.env.A2A_HUB_URL || '').replace(/\/+$/, '');
-    var hasHighInfoFailure = (constraintCheck.violations && constraintCheck.violations.length > 0)
+    const publishAntiPatterns = String(process.env.EVOLVER_PUBLISH_ANTI_PATTERNS || '').toLowerCase() === 'true';
+    const hubUrl = (process.env.A2A_HUB_URL || '').replace(/\/+$/, '');
+    const hasHighInfoFailure = (constraintCheck.violations && constraintCheck.violations.length > 0)
       || (canary && !canary.ok && !canary.skipped);
     if (publishAntiPatterns && hubUrl && hasHighInfoFailure) {
       try {
-        var { buildPublishBundle: buildApBundle, httpTransportSend: httpApSend } = require('./a2aProtocol');
-        var { sanitizePayload: sanitizeAp } = require('./sanitize');
-        var apGene = geneUsed && geneUsed.type === 'Gene' && geneUsed.id
+        const { buildPublishBundle: buildApBundle, httpTransportSend: httpApSend } = require('./a2aProtocol');
+        const { sanitizePayload: sanitizeAp } = require('./sanitize');
+        const apGene = geneUsed && geneUsed.type === 'Gene' && geneUsed.id
           ? sanitizeAp(geneUsed)
           : { type: 'Gene', id: 'gene_unknown_' + Date.now(), category: derivedIntent, signals_match: signals.slice(0, 8), summary: 'Failed evolution gene' };
         apGene.anti_pattern = true;
         apGene.failure_reason = buildFailureReason(constraintCheck, validation, protocolViolations, canary);
         apGene.asset_id = computeAssetId(apGene);
-        var apCapsule = {
+        const apCapsule = {
           type: 'Capsule',
           schema_version: SCHEMA_VERSION,
           id: 'failed_' + buildCapsuleId(ts),
@@ -1665,9 +1665,9 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
           a2a: { eligible_to_broadcast: false },
         };
         apCapsule.asset_id = computeAssetId(apCapsule);
-        var apModelName = (process.env.EVOLVER_MODEL_NAME || '').trim().slice(0, 100);
-        var apMsg = buildApBundle({ gene: apGene, capsule: sanitizeAp(apCapsule), event: null, modelName: apModelName || undefined });
-        var apResult = httpApSend(apMsg, { hubUrl });
+        const apModelName = (process.env.EVOLVER_MODEL_NAME || '').trim().slice(0, 100);
+        const apMsg = buildApBundle({ gene: apGene, capsule: sanitizeAp(apCapsule), event: null, modelName: apModelName || undefined });
+        const apResult = httpApSend(apMsg, { hubUrl });
         if (apResult && typeof apResult.then === 'function') {
           apResult
             .then(function (res) {
@@ -1694,7 +1694,7 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
   // which we already do above. The Hub-side solicitLesson() handles the rest.
   // For failures without a published event (no auto-publish), we still log locally.
   if (!dryRun && !success && event && event.outcome) {
-    var failureContent = failureReason;
+    const failureContent = failureReason;
     event.failure_reason = failureContent;
     event.summary = geneUsed
       ? 'Failed: ' + geneUsed.id + ' on signals [' + (signals.slice(0, 3).join(', ') || 'none') + '] - ' + failureContent.slice(0, 200)
@@ -1793,11 +1793,11 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
   // --- Auto Hub Review: rate fetched assets based on solidify outcome ---
   // When this cycle reused a Hub asset, submit a usage-verified review.
   // The promise is returned so callers can await it before process.exit().
-  var hubReviewResult = null;
-  var hubReviewPromise = null;
+  let hubReviewResult = null;
+  let hubReviewPromise = null;
   if (!dryRun && reusedAssetId && (sourceType === 'reused' || sourceType === 'reference')) {
     try {
-      var { submitHubReview } = require('./hubReview');
+      const { submitHubReview } = require('./hubReview');
       hubReviewPromise = submitHubReview({
         reusedAssetId: reusedAssetId,
         sourceType: sourceType,
