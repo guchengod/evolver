@@ -388,7 +388,9 @@ function isValidationCommandAllowed(cmd) {
   return true;
 }
 
-function runValidations(gene, opts = {}) {
+var MAX_VALIDATION_RETRIES = parseInt(process.env.SOLIDIFY_MAX_RETRIES || '2', 10) || 0;
+
+function runValidationsOnce(gene, opts) {
   const repoRoot = opts.repoRoot || getRepoRoot();
   const timeoutMs = Number.isFinite(Number(opts.timeoutMs)) ? Number(opts.timeoutMs) : 180000;
   const validation = Array.isArray(gene && gene.validation) ? gene.validation : [];
@@ -406,6 +408,36 @@ function runValidations(gene, opts = {}) {
     if (!r.ok) return { ok: false, results, startedAt, finishedAt: Date.now() };
   }
   return { ok: true, results, startedAt, finishedAt: Date.now() };
+}
+
+function sleepSync(ms) {
+  var end = Date.now() + ms;
+  while (Date.now() < end) {}
+}
+
+function runValidations(gene, opts = {}) {
+  var maxRetries = Math.max(0, MAX_VALIDATION_RETRIES);
+  var attempt = 0;
+  var result;
+  while (attempt <= maxRetries) {
+    result = runValidationsOnce(gene, opts);
+    if (result.ok) {
+      if (attempt > 0) console.log('[Solidify] Validation passed on retry ' + attempt);
+      result.retries_attempted = attempt;
+      return result;
+    }
+    var blocked = result.results && result.results.some(function (r) {
+      return r.err && r.err.startsWith('BLOCKED:');
+    });
+    if (blocked) break;
+    attempt++;
+    if (attempt <= maxRetries) {
+      console.log('[Solidify] Validation failed (attempt ' + attempt + '/' + (maxRetries + 1) + '), retrying in 1s...');
+      sleepSync(1000);
+    }
+  }
+  result.retries_attempted = attempt > 0 ? attempt - 1 : 0;
+  return result;
 }
 
 function runCanaryCheck(opts) {

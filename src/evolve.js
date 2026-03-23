@@ -33,7 +33,7 @@ const { buildMutation, isHighRiskMutationAllowed } = require('./gep/mutation');
 const { selectPersonalityForRun } = require('./gep/personality');
 const { clip, writePromptArtifact, renderSessionsSpawnCall } = require('./gep/bridge');
 const { getEvolutionDir } = require('./gep/paths');
-const { shouldReflect, buildReflectionContext, recordReflection } = require('./gep/reflection');
+const { shouldReflect, buildReflectionContext, recordReflection, buildSuggestedMutations } = require('./gep/reflection');
 const { loadNarrativeSummary } = require('./gep/narrativeMemory');
 const { maybeReportIssue } = require('./gep/issueReporter');
 const { resolveStrategy } = require('./gep/strategy');
@@ -1219,6 +1219,42 @@ async function run() {
     }
   }
 
+  // Inject retry context from previous validation failure.
+  try {
+    var solidifyState = readStateForSolidify();
+    if (solidifyState && solidifyState.last_validation_failure) {
+      var lvf = solidifyState.last_validation_failure;
+      signals.push('retry_error_context');
+      if (lvf.cmd) signals.push('retry_cmd:' + String(lvf.cmd).slice(0, 80));
+      if (lvf.stderr) signals.push('retry_stderr:' + String(lvf.stderr).slice(0, 120));
+      console.log('[RetryContext] Injected validation failure context from previous solidify (retries=' + (lvf.retries_attempted || 0) + ').');
+    }
+  } catch (_) {}
+
+  // Curriculum engine: generate progressive evolution targets.
+  try {
+    var { generateCurriculumSignals } = require('./gep/curriculum');
+    var { getNoveltyHint: _getNoveltyHintEarly, getCapabilityGaps: _getCapGapsEarly } = require('./gep/a2aProtocol');
+    var earlyCapGaps = [];
+    try { earlyCapGaps = _getCapGapsEarly() || []; } catch (_) {}
+    var memGraphPath = require('./gep/memoryGraph').memoryGraphPath ? require('./gep/memoryGraph').memoryGraphPath() : '';
+    var curriculumSignals = generateCurriculumSignals({
+      capabilityGaps: earlyCapGaps,
+      memoryGraphPath: memGraphPath,
+      personality: {},
+    });
+    for (var ci = 0; ci < curriculumSignals.length; ci++) {
+      if (!signals.includes(curriculumSignals[ci])) {
+        signals.push(curriculumSignals[ci]);
+      }
+    }
+    if (curriculumSignals.length > 0) {
+      console.log('[Curriculum] Injected ' + curriculumSignals.length + ' curriculum target(s).');
+    }
+  } catch (e) {
+    console.log('[Curriculum] Failed (non-fatal): ' + (e && e.message ? e.message : e));
+  }
+
   // --- Hub Task Auto-Claim (with proactive questions) ---
   // Generate questions from current context, piggyback them on the fetch call,
   // then pick the best task and auto-claim it.
@@ -1469,6 +1505,7 @@ async function run() {
         preferred_gene: memoryAdvice && memoryAdvice.preferredGeneId ? memoryAdvice.preferredGeneId : null,
         banned_genes: memoryAdvice && Array.isArray(memoryAdvice.bannedGeneIds) ? memoryAdvice.bannedGeneIds : [],
         context_preview: reflectionCtx.slice(0, 1000),
+        suggested_mutations: buildSuggestedMutations(signals),
       });
       console.log(`[Reflection] Strategic reflection recorded at cycle ${cycleCount}.`);
     }

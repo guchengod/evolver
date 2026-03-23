@@ -22,6 +22,8 @@ const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
 const SEARCH_CACHE_MAX = 200;
 const PAYLOAD_CACHE_MAX = 100;
 const MIN_PHASE2_MS = 500;
+const SEMANTIC_TIMEOUT_MS = 3000;
+const SEMANTIC_SIMILARITY_BONUS = 0.3;
 
 // --- In-memory caches (per-process lifetime, bounded) ---
 
@@ -95,17 +97,84 @@ function _buildHeaders() {
   return headers;
 }
 
+function isSemanticEnabled() {
+  var v = process.env.HUBSEARCH_SEMANTIC;
+  if (v === 'false' || v === '0') return false;
+  return true;
+}
+
+function buildSemanticQuery(signals) {
+  return signals
+    .filter(function (s) { return !s.startsWith('errsig:') && !s.startsWith('errsig_norm:'); })
+    .map(function (s) {
+      var colonIdx = s.indexOf(':');
+      return colonIdx > 0 && colonIdx < 30 ? s.slice(colonIdx + 1).trim() : s;
+    })
+    .filter(Boolean)
+    .slice(0, 12)
+    .join(' ');
+}
+
+async function fetchSemanticResults(hubUrl, headers, signalList, timeoutMs) {
+  var query = buildSemanticQuery(signalList);
+  if (!query || query.length < 3) return [];
+  var url = hubUrl + '/a2a/assets/semantic-search?q=' + encodeURIComponent(query) + '&type=Gene&limit=10';
+  var controller = new AbortController();
+  var timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+  try {
+    var res = await fetch(url, { method: 'GET', headers: headers, signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return [];
+    var data = await res.json();
+    var assets = Array.isArray(data && data.assets) ? data.assets : [];
+    return assets.map(function (a) {
+      a._semantic_similarity = Number(a.similarity) || 0;
+      return a;
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    return [];
+  }
+}
+
+function mergeResults(fetchResults, semanticResults) {
+  var seen = {};
+  var merged = [];
+  for (var i = 0; i < fetchResults.length; i++) {
+    var a = fetchResults[i];
+    var id = a.asset_id || a.assetId || '';
+    if (id) seen[id] = true;
+    merged.push(a);
+  }
+  for (var j = 0; j < semanticResults.length; j++) {
+    var b = semanticResults[j];
+    var bid = b.asset_id || b.assetId || '';
+    if (bid && seen[bid]) {
+      var existing = merged.find(function (m) { return (m.asset_id || m.assetId) === bid; });
+      if (existing) existing._semantic_similarity = b._semantic_similarity || 0;
+      continue;
+    }
+    if (bid) seen[bid] = true;
+    merged.push(b);
+  }
+  return merged;
+}
+
 /**
  * Score a hub asset for local reuse quality.
  * rank = confidence * min(max(success_streak, 1), MAX_STREAK_CAP) * (reputation / 100)
  * Streak is capped to prevent unbounded score inflation.
+ * When semantic similarity is available, a bonus is added.
  */
 function scoreHubResult(asset) {
   const confidence = Number(asset.confidence) || 0;
   const streak = Math.min(Math.max(Number(asset.success_streak) || 0, 1), MAX_STREAK_CAP);
   const repRaw = Number(asset.reputation_score);
   const reputation = Number.isFinite(repRaw) ? repRaw : 50;
-  return confidence * streak * (reputation / 100);
+  var base = confidence * streak * (reputation / 100);
+  var sim = Number(asset._semantic_similarity) || 0;
+  if (sim > 0) base += sim * SEMANTIC_SIMILARITY_BONUS;
+  return base;
 }
 
 /**
@@ -172,36 +241,56 @@ async function hubSearch(signals, opts) {
     const headers = _buildHeaders();
     const cacheKey = _cacheKey(signalList);
 
-    // --- Phase 1: search_only (free) ---
+    // --- Phase 1: search_only (free) + optional parallel semantic search ---
 
     let results = _getSearchCache(cacheKey);
     let cacheHit = !!results;
+    var semanticUsed = false;
 
     if (!results) {
-      const searchMsg = buildFetch({ signals: signalList, searchOnly: true });
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), deadline - Date.now());
+      var fetchPromise = (async function () {
+        const searchMsg = buildFetch({ signals: signalList, searchOnly: true });
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), deadline - Date.now());
+        try {
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(searchMsg),
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          if (!res.ok) return { ok: false, status: res.status, results: [] };
+          const data = await res.json();
+          return {
+            ok: true,
+            results: (data && data.payload && Array.isArray(data.payload.results)) ? data.payload.results : [],
+          };
+        } catch (e) {
+          clearTimeout(timer);
+          return { ok: false, error: e.message, results: [] };
+        }
+      })();
 
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(searchMsg),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
+      var semanticPromise = isSemanticEnabled()
+        ? fetchSemanticResults(hubUrl, headers, signalList, SEMANTIC_TIMEOUT_MS)
+        : Promise.resolve([]);
 
-      if (!res.ok) {
+      var settled = await Promise.allSettled([fetchPromise, semanticPromise]);
+      var fetchResult = settled[0].status === 'fulfilled' ? settled[0].value : { ok: false, results: [] };
+      var semanticResults = settled[1].status === 'fulfilled' ? settled[1].value : [];
+
+      if (!fetchResult.ok && semanticResults.length === 0) {
         logAssetCall({
           run_id: runId, action: 'hub_search_miss', signals: signalList,
-          reason: `hub_http_${res.status}`, via: 'search_then_fetch',
+          reason: fetchResult.status ? `hub_http_${fetchResult.status}` : 'fetch_error',
+          via: 'search_then_fetch',
         });
-        return { hit: false, reason: `hub_http_${res.status}` };
+        return { hit: false, reason: fetchResult.status ? `hub_http_${fetchResult.status}` : 'fetch_error' };
       }
 
-      const data = await res.json();
-      results = (data && data.payload && Array.isArray(data.payload.results))
-        ? data.payload.results
-        : [];
+      results = mergeResults(fetchResult.results || [], semanticResults);
+      if (semanticResults.length > 0) semanticUsed = true;
 
       _setSearchCache(cacheKey, results);
     }
@@ -267,7 +356,8 @@ async function hubSearch(signals, opts) {
       }
     }
 
-    console.log(`[HubSearch] Hit via search+fetch: ${pick.match.asset_id || 'unknown'} (score=${pick.score}, mode=${pick.mode}${cacheHit ? ', search_cached' : ''})`);
+    var viaLabel = cacheHit ? 'search_cached' : (semanticUsed ? 'search+semantic' : 'search_then_fetch');
+    console.log(`[HubSearch] Hit via ${viaLabel}: ${pick.match.asset_id || 'unknown'} (score=${pick.score}, mode=${pick.mode}${pick.match._semantic_similarity ? ', sim=' + pick.match._semantic_similarity : ''})`);
 
     logAssetCall({
       run_id: runId,
@@ -279,7 +369,7 @@ async function hubSearch(signals, opts) {
       score: pick.score,
       mode: pick.mode,
       signals: signalList,
-      via: cacheHit ? 'search_cached' : 'search_then_fetch',
+      via: viaLabel,
     });
 
     return {

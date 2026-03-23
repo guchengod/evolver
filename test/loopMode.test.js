@@ -130,7 +130,7 @@ describe('bare invocation routing -- black-box', () => {
       cwd: repoRoot,
       encoding: 'utf8',
       timeout: 15000,
-      env: { ...process.env, EVOLVE_BRIDGE: 'false', A2A_HUB_URL: '' },
+      env: { ...process.env, EVOLVE_BRIDGE: 'false', A2A_HUB_URL: '', EVOLVER_REPO_ROOT: repoRoot },
     });
     assert.ok(out.includes('Starting evolver') || out.includes('GEP'),
       'bare invocation should start evolution, not show usage. Got: ' + out.slice(0, 200));
