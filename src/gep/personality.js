@@ -189,8 +189,8 @@ function proposeMutations({ baseState, reason, driftEnabled, signals }) {
     muts.push({ type: 'PersonalityMutation', param: 'creativity', delta: +0.1, reason: r || 'opportunity signal detected' });
     muts.push({ type: 'PersonalityMutation', param: 'risk_tolerance', delta: +0.05, reason: 'allow exploration for innovation' });
   } else {
-    // Plateau-like generic: slightly increase rigor, slightly decrease verbosity (more concise execution).
-    muts.push({ type: 'PersonalityMutation', param: 'rigor', delta: +0.05, reason: r || 'stability bias' });
+    // Plateau-like generic: nudge creativity up to break out of local optimum.
+    muts.push({ type: 'PersonalityMutation', param: 'creativity', delta: +0.05, reason: r || 'plateau creativity nudge' });
     muts.push({ type: 'PersonalityMutation', param: 'verbosity', delta: -0.05, reason: 'reduce noise' });
   }
 
@@ -289,6 +289,26 @@ function selectPersonalityForRun({ driftEnabled, signals, recentEvents } = {}) {
     triggeredApplied = applied.applied;
   }
 
+  // Reflection-driven mutation: consume suggested_mutations from the latest reflection.
+  let reflectionApplied = [];
+  try {
+    const { loadRecentReflections } = require('./reflection');
+    const recent = loadRecentReflections(1);
+    if (recent.length > 0 && Array.isArray(recent[0].suggested_mutations) && recent[0].suggested_mutations.length > 0) {
+      var refMuts = recent[0].suggested_mutations.slice(0, 2).map(function (m) {
+        return {
+          type: 'PersonalityMutation',
+          param: m.param,
+          delta: Math.max(-0.1, Math.min(0.1, Number(m.delta) || 0)),
+          reason: String(m.reason || 'reflection').slice(0, 140),
+        };
+      });
+      const refApplied = applyPersonalityMutations(model.current, refMuts);
+      model.current = refApplied.state;
+      reflectionApplied = refApplied.applied;
+    }
+  } catch (_) {}
+
   // Persist updated current state.
   const saved = savePersonalityModel(model);
   const key = personalityKey(saved.current);
@@ -298,7 +318,7 @@ function selectPersonalityForRun({ driftEnabled, signals, recentEvents } = {}) {
     personality_state: saved.current,
     personality_key: key,
     personality_known: known,
-    personality_mutations: [...naturalSelectionApplied, ...triggeredApplied],
+    personality_mutations: [...naturalSelectionApplied, ...triggeredApplied, ...reflectionApplied],
     model_meta: {
       best_known_key: best && best.key ? best.key : null,
       best_known_score: best && Number.isFinite(Number(best.score)) ? Number(best.score) : null,

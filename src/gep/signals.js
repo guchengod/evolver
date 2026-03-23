@@ -12,6 +12,7 @@ var OPPORTUNITY_SIGNALS = [
   'repair_loop_detected',
   'force_innovation_after_repair_loop',
   'tool_bypass',
+  'curriculum_target',
 ];
 
 function hasOpportunitySignal(signals) {

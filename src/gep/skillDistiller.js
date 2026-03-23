@@ -837,6 +837,21 @@ function autoDistill() {
     },
   }, 'auto_success');
 
+  if (process.env.SKILL_AUTO_PUBLISH !== '0') {
+    try {
+      var skillPublisher = require('./skillPublisher');
+      skillPublisher.publishSkillToHub(gene).then(function (res) {
+        if (res.ok) {
+          console.log('[Distiller] Auto-distilled skill published: ' + (res.result && res.result.skill_id || gene.id));
+        } else {
+          console.warn('[Distiller] Auto-distilled skill publish failed: ' + (res.error || 'unknown'));
+        }
+      }).catch(function () {});
+    } catch (e) {
+      console.warn('[Distiller] Skill publisher unavailable: ' + (e.message || e));
+    }
+  }
+
   return { ok: true, gene: gene, auto: true };
 }
 

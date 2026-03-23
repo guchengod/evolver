@@ -4,16 +4,39 @@ const fs = require('fs');
 const path = require('path');
 const { getReflectionLogPath, getEvolutionDir } = require('./paths');
 
-const REFLECTION_INTERVAL_CYCLES = 5;
+const REFLECTION_INTERVAL_DEFAULT = 5;
+const REFLECTION_INTERVAL_SUCCESS = 8;
+const REFLECTION_INTERVAL_FAILURE = 3;
 const REFLECTION_COOLDOWN_MS = 30 * 60 * 1000;
+
+// Keep the export name for backward compat.
+const REFLECTION_INTERVAL_CYCLES = REFLECTION_INTERVAL_DEFAULT;
 
 function ensureDir(dir) {
   try { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
 }
 
+function computeReflectionInterval(recentEvents) {
+  try {
+    var events = Array.isArray(recentEvents) ? recentEvents : [];
+    if (events.length < 3) return REFLECTION_INTERVAL_DEFAULT;
+    var tail = events.slice(-3);
+    var allSuccess = tail.every(function (e) {
+      return e && e.outcome && e.outcome.status === 'success';
+    });
+    var allFailed = tail.every(function (e) {
+      return e && e.outcome && e.outcome.status === 'failed';
+    });
+    if (allSuccess) return REFLECTION_INTERVAL_SUCCESS;
+    if (allFailed) return REFLECTION_INTERVAL_FAILURE;
+  } catch (_) {}
+  return REFLECTION_INTERVAL_DEFAULT;
+}
+
 function shouldReflect({ cycleCount, recentEvents }) {
-  if (!Number.isFinite(cycleCount) || cycleCount < REFLECTION_INTERVAL_CYCLES) return false;
-  if (cycleCount % REFLECTION_INTERVAL_CYCLES !== 0) return false;
+  var interval = computeReflectionInterval(recentEvents);
+  if (!Number.isFinite(cycleCount) || cycleCount < interval) return false;
+  if (cycleCount % interval !== 0) return false;
 
   const logPath = getReflectionLogPath();
   try {
@@ -24,6 +47,32 @@ function shouldReflect({ cycleCount, recentEvents }) {
   } catch (_) {}
 
   return true;
+}
+
+function buildSuggestedMutations(signals) {
+  var sigs = Array.isArray(signals) ? signals : [];
+  var muts = [];
+  var hasStagnation = sigs.some(function (s) {
+    return s === 'stable_success_plateau' ||
+           s === 'evolution_stagnation_detected' ||
+           s === 'empty_cycle_loop_detected';
+  });
+  var hasError = sigs.some(function (s) {
+    return s === 'log_error' || String(s).startsWith('errsig:') || String(s).startsWith('errsig_norm:');
+  });
+  var hasGap = sigs.some(function (s) {
+    return s === 'capability_gap' || s === 'external_opportunity';
+  });
+  if (hasStagnation) {
+    muts.push({ param: 'creativity', delta: +0.05, reason: 'stagnation detected in reflection' });
+  }
+  if (hasError) {
+    muts.push({ param: 'rigor', delta: +0.05, reason: 'errors detected in reflection' });
+  }
+  if (hasGap) {
+    muts.push({ param: 'risk_tolerance', delta: +0.05, reason: 'capability gap in reflection' });
+  }
+  return muts.slice(0, 2);
 }
 
 function buildReflectionContext({ recentEvents, signals, memoryAdvice, narrative }) {
@@ -123,5 +172,6 @@ module.exports = {
   buildReflectionContext,
   recordReflection,
   loadRecentReflections,
+  buildSuggestedMutations,
   REFLECTION_INTERVAL_CYCLES,
 };

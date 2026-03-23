@@ -953,6 +953,17 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
   state.last_solidify = {
     run_id: runId, at: ts, event_id: event.id, capsule_id: capsuleId, outcome: event.outcome,
   };
+  if (!success && validation && !validation.ok) {
+    var failedCmd = validation.results && validation.results.find(function (r) { return !r.ok; });
+    state.last_validation_failure = {
+      cmd: failedCmd ? failedCmd.cmd : null,
+      stderr: failedCmd ? String(failedCmd.err || '').slice(0, 500) : null,
+      retries_attempted: validation.retries_attempted || 0,
+      at: ts,
+    };
+  } else {
+    delete state.last_validation_failure;
+  }
   if (!dryRun) {
     state.solidify_count = (state.solidify_count || 0) + 1;
     writeStateForSolidify(state);
