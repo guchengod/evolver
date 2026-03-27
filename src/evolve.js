@@ -1371,6 +1371,77 @@ async function run() {
     console.warn('[Commitment] Overdue task check failed (non-fatal):', e && e.message || e);
   }
 
+  // --- Hub Events: process pending high-priority events from /a2a/events/poll ---
+  // Fetched automatically when heartbeat returns has_pending_events: true.
+  // Injects event-specific signals and stores event context for LLM awareness.
+  try {
+    const { consumeHubEvents } = require('./gep/a2aProtocol');
+    const hubEvents = consumeHubEvents();
+    if (hubEvents.length > 0) {
+      const HUB_EVENT_SIGNALS = {
+        // ── 对话 ──────────────────────────────────────────────────────
+        dialog_message:                ['dialog', 'respond_required'],
+
+        // ── 议会 / 治理 ───────────────────────────────────────────────
+        council_invite:                ['council', 'governance', 'respond_required'],
+        council_second_request:        ['council', 'governance', 'second_request', 'respond_required'],
+        council_vote:                  ['council', 'vote', 'governance', 'respond_required'],
+        council_community_vote:        ['council', 'community_vote', 'governance', 'respond_required'],
+        council_decision:              ['council', 'decision', 'governance'],
+        council_decision_notification: ['council', 'governance'],
+
+        // ── 审议 / 辩论 ───────────────────────────────────────────────
+        deliberation_invite:           ['deliberation', 'governance', 'respond_required'],
+        deliberation_challenge:        ['deliberation', 'challenge', 'respond_required'],
+        deliberation_next_round:       ['deliberation', 'next_round', 'respond_required'],
+        deliberation_completed:        ['deliberation', 'governance'],
+
+        // ── 协作 / 会话 ───────────────────────────────────────────────
+        collaboration_invite:          ['collaboration', 'respond_required'],
+        session_message:               ['collaboration', 'dialog', 'respond_required'],
+        session_nudge:                 ['collaboration', 'idle_warning'],
+        task_board_update:             ['collaboration', 'task_update'],
+
+        // ── 任务 / 工作池 ─────────────────────────────────────────────
+        task_available:                ['task', 'work_available'],
+        work_assigned:                 ['task', 'work_assigned'],
+        swarm_subtask_available:       ['swarm', 'task', 'work_available'],
+        swarm_aggregation_available:   ['swarm', 'aggregation', 'work_available'],
+        diverge_task_assigned:         ['swarm', 'task', 'work_assigned'],
+        pipeline_step_assigned:        ['pipeline', 'task', 'work_assigned'],
+        organism_work:                 ['organism', 'task', 'work_assigned'],
+
+        // ── 评审 / 赏金 ───────────────────────────────────────────────
+        bounty_review_requested:       ['review', 'bounty', 'respond_required'],
+        peer_review_request:           ['review', 'swarm', 'respond_required'],
+        supplement_request:            ['supplement', 'respond_required'],
+
+        // ── 成长 / 知识 ───────────────────────────────────────────────
+        evolution_circle_formed:       ['evolution_circle', 'collaboration'],
+        knowledge_update:              ['knowledge'],
+        topic_notification:            ['topic', 'knowledge'],
+        reflection_prompt:             ['reflection'],
+
+        // ── 系统 ──────────────────────────────────────────────────────
+        task_overdue:                  ['overdue_task', 'urgent'],
+      };
+      for (const ev of hubEvents) {
+        const evSignals = HUB_EVENT_SIGNALS[ev.type] || ['hub_event'];
+        for (const sig of evSignals) {
+          if (!signals.includes(sig)) signals.unshift(sig);
+        }
+        console.log('[HubEvents] Event: ' + ev.type +
+          (ev.payload && ev.payload.deliberation_id ? ' (deliberation: ' + ev.payload.deliberation_id + ')' : '') +
+          ' → signals: ' + evSignals.join(', '));
+      }
+      // Store events in evidencefor LLM context on next evolve pass
+      if (!global._pendingHubEventContext) global._pendingHubEventContext = [];
+      global._pendingHubEventContext.push(...hubEvents);
+    }
+  } catch (e) {
+    console.warn('[HubEvents] Processing failed (non-fatal):', e && e.message || e);
+  }
+
   // --- Worker Pool: select task from heartbeat available_work (deferred claim) ---
   // Only remember the best task and inject its signals; actual claim+complete
   // happens atomically in solidify.js after a successful evolution cycle.
@@ -1410,6 +1481,11 @@ async function run() {
     recent_session_tail: String(recentMasterLog || '').slice(-6000),
     today_log_tail: String(todayLog || '').slice(-2500),
   };
+
+  // Inject pending hub events into evidence so LLM sees them in context
+  if (global._pendingHubEventContext && global._pendingHubEventContext.length > 0) {
+    evidence.hub_events = global._pendingHubEventContext.splice(0, 10);
+  }
 
   const sessionScope = getSessionScope();
   const observations = {

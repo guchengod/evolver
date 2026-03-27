@@ -415,6 +415,8 @@ let _latestSkillStoreHint = null;
 let _latestNoveltyHint = null;
 let _latestCapabilityGaps = [];
 let _pendingCommitmentUpdates = [];
+let _latestHubEvents = [];
+let _pollInflight = false;
 let _cachedHubNodeSecret = null;
 let _cachedHubNodeSecretAt = 0;
 const _SECRET_CACHE_TTL_MS = 60000;
@@ -616,6 +618,11 @@ function sendHeartbeat() {
       if (data.circle_experience && typeof data.circle_experience === 'object') {
         console.log('[EvolutionCircle] Active circle: ' + (data.circle_experience.circle_id || '?') + ' (' + (data.circle_experience.member_count || 0) + ' members)');
       }
+      if (data.has_pending_events) {
+        _fetchHubEvents().catch(function (err) {
+          console.warn('[Events] Poll failed:', err && err.message || err);
+        });
+      }
       _heartbeatConsecutiveFailures = 0;
       try {
         const logPath = getEvolverLogPath();
@@ -685,6 +692,74 @@ function getNoveltyHint() {
 
 function getCapabilityGaps() {
   return _latestCapabilityGaps;
+}
+
+/**
+ * Fetch pending high-priority events from the hub via long-poll.
+ * Called automatically when heartbeat returns has_pending_events: true.
+ * Results are stored in _latestHubEvents and can be consumed via consumeHubEvents().
+ */
+function _fetchHubEvents() {
+  if (_pollInflight) return Promise.resolve([]);
+  const hubUrl = getHubUrl();
+  if (!hubUrl) return Promise.resolve([]);
+  _pollInflight = true;
+
+  const nodeId = getNodeId();
+  const endpoint = hubUrl.replace(/\/+$/, '') + '/a2a/events/poll';
+  const body = JSON.stringify({
+    protocol: 'gep-a2a',
+    protocol_version: PROTOCOL_VERSION,
+    message_type: 'events_poll',
+    message_id: 'poll_' + Date.now(),
+    timestamp: new Date().toISOString(),
+    sender_id: nodeId,
+    payload: {},
+  });
+
+  return fetch(endpoint, {
+    method: 'POST',
+    headers: buildHubHeaders(),
+    body: body,
+    signal: AbortSignal.timeout(60000),
+  })
+    .then(function (res) { return res.json(); })
+    .then(function (data) {
+      const events = (data && Array.isArray(data.events))
+        ? data.events
+        : (data && data.payload && Array.isArray(data.payload.events))
+          ? data.payload.events
+          : [];
+      if (events.length > 0) {
+        _latestHubEvents = _latestHubEvents.concat(events);
+        console.log('[Events] Received ' + events.length + ' pending event(s): ' +
+          events.map(function (e) { return e.type; }).join(', '));
+      }
+      return events;
+    })
+    .catch(function (err) {
+      console.warn('[Events] Poll error:', err && err.message || err);
+      return [];
+    })
+    .finally(function () {
+      _pollInflight = false;
+    });
+}
+
+/**
+ * Returns all buffered hub events (does not clear the buffer).
+ */
+function getHubEvents() {
+  return _latestHubEvents;
+}
+
+/**
+ * Returns and clears all buffered hub events.
+ */
+function consumeHubEvents() {
+  const events = _latestHubEvents;
+  _latestHubEvents = [];
+  return events;
 }
 
 /**
@@ -807,4 +882,6 @@ module.exports = {
   buildHubHeaders,
   getNoveltyHint,
   getCapabilityGaps,
+  getHubEvents,
+  consumeHubEvents,
 };
