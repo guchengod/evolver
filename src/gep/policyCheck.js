@@ -72,11 +72,12 @@ function matchAnyExact(rel, exacts) {
   return set.has(rel);
 }
 
+const MAX_REGEX_PATTERN_LEN = 1024;
 function matchAnyRegex(rel, regexList) {
   for (const raw of Array.isArray(regexList) ? regexList : []) {
     try {
       const s = String(raw);
-      if (s.length > 1024) continue;
+      if (s.length > MAX_REGEX_PATTERN_LEN) continue;
       if (new RegExp(s, 'i').test(rel)) return true;
     } catch (_) {
       console.warn('[policyCheck] matchAnyRegex invalid pattern:', raw, _ && _.message || _);

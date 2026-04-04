@@ -68,6 +68,7 @@ function scoreGeneSemantic(gene, signals) {
   return cosineSimilarity(tfSignals, tfGene);
 }
 
+const MAX_REGEX_PATTERN_LEN = 1024;
 function matchPatternToSignals(pattern, signals) {
   if (!pattern || !signals || signals.length === 0) return false;
   const p = String(pattern);
@@ -76,7 +77,7 @@ function matchPatternToSignals(pattern, signals) {
   // Regex pattern: /body/flags
   const regexLike = p.length >= 2 && p.startsWith('/') && p.lastIndexOf('/') > 0;
   if (regexLike) {
-    if (p.length > 1024) return false;
+    if (p.length > MAX_REGEX_PATTERN_LEN) return false;
     const lastSlash = p.lastIndexOf('/');
     const body = p.slice(1, lastSlash);
     const flags = p.slice(lastSlash + 1);
