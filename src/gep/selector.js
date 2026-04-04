@@ -76,6 +76,7 @@ function matchPatternToSignals(pattern, signals) {
   // Regex pattern: /body/flags
   const regexLike = p.length >= 2 && p.startsWith('/') && p.lastIndexOf('/') > 0;
   if (regexLike) {
+    if (p.length > 1024) return false;
     const lastSlash = p.lastIndexOf('/');
     const body = p.slice(1, lastSlash);
     const flags = p.slice(lastSlash + 1);

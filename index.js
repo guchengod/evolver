@@ -254,11 +254,11 @@ async function main() {
             const st1 = readJsonSafe(solidifyStatePath);
             const lastSignals = st1 && st1.last_run && Array.isArray(st1.last_run.signals) ? st1.last_run.signals : [];
             if (lastSignals.includes('force_steady_state')) {
-              saturationMultiplier = 10;
-              console.log('[Daemon] Saturation detected. Entering steady-state mode (10x sleep).');
+              saturationMultiplier = 4;
+              console.log('[Daemon] Saturation detected. Entering steady-state mode (4x sleep).');
             } else if (lastSignals.includes('evolution_saturation')) {
-              saturationMultiplier = 5;
-              console.log('[Daemon] Approaching saturation. Reducing evolution frequency (5x sleep).');
+              saturationMultiplier = 2;
+              console.log('[Daemon] Approaching saturation. Reducing evolution frequency (2x sleep).');
             }
           } catch (e) {}
 

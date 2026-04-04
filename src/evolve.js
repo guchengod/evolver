@@ -1206,7 +1206,7 @@ async function run() {
 
   // --- Idle-cycle gating: skip Hub API calls during saturation to save credits ---
   let _idleFetchInterval = parseInt(String(process.env.EVOLVER_IDLE_FETCH_INTERVAL_MS || ''), 10);
-  if (!Number.isFinite(_idleFetchInterval) || _idleFetchInterval <= 0) _idleFetchInterval = 1800000;
+  if (!Number.isFinite(_idleFetchInterval) || _idleFetchInterval <= 0) _idleFetchInterval = 600000;
   let skipHubCalls = false;
 
   if (shouldSkipHubCalls(signals)) {

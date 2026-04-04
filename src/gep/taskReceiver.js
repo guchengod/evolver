@@ -39,7 +39,7 @@ async function fetchTasks(opts) {
 
   try {
     const payload = {
-      asset_type: null,
+      tasks_only: true,
       include_tasks: true,
     };
 
