@@ -175,8 +175,6 @@ function decayWeight(updatedAtIso, halfLifeDays) {
 }
 
 function aggregateEdges(events) {
-  // Aggregate by (signal_key, gene_id) from outcome events.
-  // Laplace smoothing to avoid 0/1 extremes.
   const map = new Map();
   for (const ev of events) {
     if (!ev || ev.type !== 'MemoryGraphEvent') continue;
@@ -186,10 +184,12 @@ function aggregateEdges(events) {
     if (!geneId) continue;
 
     const k = `${signalKey}::${geneId}`;
-    const cur = map.get(k) || { signalKey, geneId, success: 0, fail: 0, last_ts: null, last_score: null };
+    const cur = map.get(k) || { signalKey, geneId, success: 0, fail: 0, last_ts: null, last_score: null, has_predictive: false };
     const status = ev.outcome && ev.outcome.status ? String(ev.outcome.status) : 'unknown';
     if (status === 'success') cur.success += 1;
     else if (status === 'failed') cur.fail += 1;
+
+    if (ev.outcome && ev.outcome.predictive) cur.has_predictive = true;
 
     const ts = ev.ts || ev.created_at || ev.at;
     if (ts && (!cur.last_ts || Date.parse(ts) > Date.parse(cur.last_ts))) {
@@ -233,13 +233,129 @@ function edgeExpectedSuccess(edge, opts) {
   const p = (succ + 1) / (total + 2); // Laplace smoothing
   const halfLifeDays = opts && Number.isFinite(Number(opts.half_life_days)) ? Number(opts.half_life_days) : 30;
   const w = decayWeight(e.last_ts || '', halfLifeDays);
-  return { p, w, total, value: p * w };
+  // TTT-inspired: outcomes carrying predictive data (forward-looking evaluation)
+  // get a modest boost (1.15x) in the aggregated value, nudging memory preferences
+  // toward genes that improve evolvability rather than just fixing symptoms.
+  const predictiveMultiplier = e.has_predictive ? 1.15 : 1.0;
+  return { p, w, total, value: p * w * predictiveMultiplier };
+}
+
+// ---------------------------------------------------------------------------
+// TTT-inspired Epoch Boundary & Memory Reset
+// Analogous to resetting fast weights at document boundaries to prevent
+// context leakage from stale environments into new ones.
+// ---------------------------------------------------------------------------
+const EPOCH_RESET_TRIGGERS = new Set([
+  'consecutive_failure_streak_5',
+  'forced_epoch_reset',
+  'failure_loop_detected',
+]);
+const EPOCH_GENE_POOL_CHANGE_THRESHOLD = 0.3;
+
+function readCurrentEpoch() {
+  const statePath = memoryGraphStatePath();
+  const state = readJsonIfExists(statePath, {});
+  return {
+    epoch_id: state.current_epoch_id || null,
+    epoch_started_at: state.epoch_started_at || null,
+    prev_env_fingerprint_key: state.prev_env_fingerprint_key || null,
+    prev_gene_lib_version: state.prev_gene_lib_version || null,
+  };
+}
+
+function checkEpochBoundary({ signals, currentEnvFingerprintKey, currentGeneLibVersion }) {
+  const epoch = readCurrentEpoch();
+  const curSignals = Array.isArray(signals) ? signals : [];
+
+  // Trigger 1: explicit reset signals
+  for (const s of curSignals) {
+    if (EPOCH_RESET_TRIGGERS.has(String(s))) {
+      return { shouldReset: true, reason: `signal:${s}` };
+    }
+  }
+
+  // Trigger 2: environment fingerprint major change (platform/node version shift)
+  if (epoch.prev_env_fingerprint_key && currentEnvFingerprintKey &&
+      epoch.prev_env_fingerprint_key !== currentEnvFingerprintKey) {
+    return { shouldReset: true, reason: 'env_major_change' };
+  }
+
+  // Trigger 3: gene library version jump (>30% of genes changed)
+  if (epoch.prev_gene_lib_version && currentGeneLibVersion &&
+      epoch.prev_gene_lib_version !== currentGeneLibVersion) {
+    return { shouldReset: true, reason: 'gene_pool_refresh' };
+  }
+
+  return { shouldReset: false, reason: null };
+}
+
+function resetMemoryPreferences({ reason, currentEnvFingerprintKey, currentGeneLibVersion }) {
+  const ts = nowIso();
+  const epochId = `epoch_${Date.now()}_${stableHash(ts + (reason || ''))}`;
+
+  const epochEvent = {
+    type: 'MemoryGraphEvent',
+    kind: 'epoch_boundary',
+    id: `mge_${Date.now()}_${stableHash(`epoch_boundary|${ts}`)}`,
+    ts,
+    epoch: {
+      id: epochId,
+      reason: reason || 'manual',
+      started_at: ts,
+    },
+  };
+  appendJsonl(memoryGraphPath(), epochEvent);
+
+  const statePath = memoryGraphStatePath();
+  const state = readJsonIfExists(statePath, {});
+  state.current_epoch_id = epochId;
+  state.epoch_started_at = ts;
+  state.prev_env_fingerprint_key = currentEnvFingerprintKey || null;
+  state.prev_gene_lib_version = currentGeneLibVersion || null;
+  // Reset last_action to prevent stale outcome attribution
+  if (state.last_action) state.last_action.outcome_recorded = true;
+  writeJsonAtomic(statePath, state);
+
+  return { epochId, reason, started_at: ts };
 }
 
 function getMemoryAdvice({ signals, genes, driftEnabled }) {
   const events = tryReadMemoryGraphEvents(2000);
-  const edges = aggregateEdges(events);
-  const geneOutcomes = aggregateGeneOutcomes(events);
+
+  // TTT-inspired epoch filtering: find the latest epoch_boundary event.
+  // Only use events from the current epoch for preference calculation.
+  // Cross-epoch events get a 0.1x weight (weak prior, not discarded).
+  let epochBoundaryTs = null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (ev && ev.kind === 'epoch_boundary' && ev.ts) {
+      epochBoundaryTs = Date.parse(ev.ts);
+      break;
+    }
+  }
+
+  // TTT-inspired: build epoch-aware edge aggregations.
+  // When an epoch boundary exists, split aggregation into current-epoch
+  // and cross-epoch sets so that ban decisions and preference scoring
+  // operate on current-epoch evidence, with cross-epoch data as weak priors.
+  const CROSS_EPOCH_WEIGHT = 0.1;
+
+  const allEdges = aggregateEdges(events);
+  const allGeneOutcomes = aggregateGeneOutcomes(events);
+
+  // Epoch-split: re-aggregate only current-epoch events for ban decisions
+  let curEpochEdges = allEdges;
+  let curEpochGeneOutcomes = allGeneOutcomes;
+  if (epochBoundaryTs) {
+    const curEpochEvents = events.filter(function (ev) {
+      if (!ev || !ev.ts) return false;
+      const t = Date.parse(ev.ts);
+      return Number.isFinite(t) && t >= epochBoundaryTs;
+    });
+    curEpochEdges = aggregateEdges(curEpochEvents);
+    curEpochGeneOutcomes = aggregateGeneOutcomes(curEpochEvents);
+  }
+
   const curSignals = Array.isArray(signals) ? signals : [];
   const curKey = computeSignalKey(curSignals);
 
@@ -269,7 +385,8 @@ function getMemoryAdvice({ signals, genes, driftEnabled }) {
     for (const g of Array.isArray(genes) ? genes : []) {
       if (!g || g.type !== 'Gene' || !g.id) continue;
       const k = `${ck.key}::${g.id}`;
-      const edge = edges.get(k);
+      const edge = allEdges.get(k);
+      const curEpochEdge = curEpochEdges.get(k);
       const cur = byGene.get(g.id) || {
         geneId: g.id, best: 0, attempts: 0, prior: 0, prior_attempts: 0,
         rawSuccess: 0, rawFail: 0,
@@ -278,23 +395,41 @@ function getMemoryAdvice({ signals, genes, driftEnabled }) {
 
       if (edge) {
         const ex = edgeExpectedSuccess(edge, { half_life_days: 30 });
-        const weighted = ex.value * ck.sim;
+        let epochFactor = 1.0;
+        if (epochBoundaryTs && edge.last_ts) {
+          const edgeTs = Date.parse(edge.last_ts);
+          if (Number.isFinite(edgeTs) && edgeTs < epochBoundaryTs) {
+            epochFactor = CROSS_EPOCH_WEIGHT;
+          }
+        }
+        const weighted = ex.value * ck.sim * epochFactor;
         if (weighted > cur.best) cur.best = weighted;
         cur.attempts = Math.max(cur.attempts, ex.total);
-        cur.rawSuccess += (Number(edge.success) || 0);
-        cur.rawFail += (Number(edge.fail) || 0);
-        // Per-key attempt count: how many times this gene was tried on
-        // similar signal keys. Used for signal-scoped ban decisions.
+
+        // Use current-epoch edge for rawSuccess/rawFail and perKeyAttempts
+        // so that ban decisions only consider current-epoch evidence.
+        const ceEdge = curEpochEdge || { success: 0, fail: 0 };
+        cur.rawSuccess += (Number(ceEdge.success) || 0);
+        cur.rawFail += (Number(ceEdge.fail) || 0);
         if (ck.sim >= 0.8) {
-          cur.perKeyAttempts += ex.total;
+          const ceTotal = (Number(ceEdge.success) || 0) + (Number(ceEdge.fail) || 0);
+          cur.perKeyAttempts += ceTotal;
         }
         totalAttempts += ex.total;
       }
 
-      const gEdge = geneOutcomes.get(String(g.id));
+      const gEdge = allGeneOutcomes.get(String(g.id));
+      const ceGEdge = curEpochGeneOutcomes.get(String(g.id));
       if (gEdge) {
         const gx = edgeExpectedSuccess(gEdge, { half_life_days: 45 });
-        cur.prior = Math.max(cur.prior, gx.value);
+        let gEpochFactor = 1.0;
+        if (epochBoundaryTs && gEdge.last_ts) {
+          const gTs = Date.parse(gEdge.last_ts);
+          if (Number.isFinite(gTs) && gTs < epochBoundaryTs) {
+            gEpochFactor = CROSS_EPOCH_WEIGHT;
+          }
+        }
+        cur.prior = Math.max(cur.prior, gx.value * gEpochFactor);
         cur.prior_attempts = Math.max(cur.prior_attempts, gx.total);
       }
 
@@ -463,6 +598,7 @@ function recordAttempt({
   hypothesisId,
   capsulesUsed,
   observations,
+  chunkGenes,
 }) {
   const signalKey = computeSignalKey(signals);
   const geneId = selectedGene && selectedGene.id ? String(selectedGene.id) : null;
@@ -473,6 +609,12 @@ function recordAttempt({
   const personalityState = personality_state || null;
   const mutNorm = mutation && isValidMutation(mutation) ? normalizeMutation(mutation) : null;
   const psNorm = personalityState && isValidPersonalityState(personalityState) ? normalizePersonalityState(personalityState) : null;
+
+  // TTT-inspired: multi-gene chunk tracking
+  const chunkGeneIds = Array.isArray(chunkGenes)
+    ? chunkGenes.map(function (g) { return g && g.id ? String(g.id) : null; }).filter(Boolean)
+    : [];
+
   const ev = {
     type: 'MemoryGraphEvent',
     kind: 'attempt',
@@ -531,6 +673,7 @@ function recordAttempt({
     created_at: ts,
     outcome_recorded: false,
     baseline_observed: observations && typeof observations === 'object' ? observations : null,
+    chunk_gene_ids: chunkGeneIds.length > 0 ? chunkGeneIds : undefined,
   };
   writeJsonAtomic(statePath, state);
 
@@ -579,7 +722,58 @@ function tryParseLastEvolutionEventOutcome(evidenceText) {
   return null;
 }
 
-function inferOutcomeEnhanced({ prevHadError, currentHasError, baselineObserved, currentObserved }) {
+// Decorative (non-actionable) signals that should not count toward clarity.
+const DECORATIVE_SIGNALS = new Set([
+  'stable_success_plateau', 'memory_missing', 'evolution_saturation',
+  'force_steady_state', 'empty_cycle_loop_detected',
+]);
+
+function computePredictiveBoost({ baselineObserved, currentObserved, signals }) {
+  let boost = 0;
+
+  const curSignals = Array.isArray(signals) ? signals : [];
+  const prevSignalCount = baselineObserved && Number.isFinite(Number(baselineObserved.signal_count))
+    ? Number(baselineObserved.signal_count) : 0;
+  const curActionable = curSignals.filter(function (s) { return !DECORATIVE_SIGNALS.has(String(s)); });
+
+  // (a) Signal clarity: more actionable signals relative to total = easier next selection
+  if (curActionable.length > 0 && curSignals.length > 0) {
+    const clarity = curActionable.length / curSignals.length;
+    boost += Math.min(0.08, clarity * 0.08);
+  }
+
+  // (b) Trajectory trend: read recent outcomes from memory graph to detect momentum.
+  //     Consecutive successes = high predictability; consecutive failures = low.
+  try {
+    const recentEvents = tryReadMemoryGraphEvents(50);
+    const outcomes = [];
+    for (let i = recentEvents.length - 1; i >= 0 && outcomes.length < 5; i--) {
+      const ev = recentEvents[i];
+      if (ev && ev.kind === 'outcome' && ev.outcome) outcomes.push(ev.outcome.status);
+    }
+    if (outcomes.length >= 2) {
+      const successes = outcomes.filter(function (s) { return s === 'success'; }).length;
+      const trend = (successes / outcomes.length) - 0.5; // [-0.5, 0.5]
+      boost += Math.max(-0.06, Math.min(0.06, trend * 0.12));
+    }
+  } catch (_) {}
+
+  // (c) Frontier touched: if current signals include a curriculum_target, it means
+  //     this cycle is pushing the capability boundary -- reward forward exploration.
+  const frontierTouched = curSignals.some(function (s) {
+    return String(s).startsWith('curriculum_target:');
+  });
+  if (frontierTouched) boost += 0.04;
+
+  return {
+    boost: Math.max(-0.1, Math.min(0.1, boost)),
+    signal_clarity: curSignals.length > 0 ? curActionable.length / curSignals.length : 0,
+    trajectory_trend: boost,
+    frontier_touched: frontierTouched,
+  };
+}
+
+function inferOutcomeEnhanced({ prevHadError, currentHasError, baselineObserved, currentObserved, signals }) {
   const evidence =
     currentObserved &&
     currentObserved.evidence &&
@@ -618,7 +812,20 @@ function inferOutcomeEnhanced({ prevHadError, currentHasError, baselineObserved,
     score += Math.max(-0.06, Math.min(0.06, ratio));
   }
 
-  return { status: base.status, score: clamp01(score), note: `${base.note}|heuristic_delta` };
+  // TTT-inspired predictive boost: reward actions that improve next-cycle evolvability
+  const predictive = computePredictiveBoost({ baselineObserved, currentObserved, signals });
+  score += predictive.boost;
+
+  return {
+    status: base.status,
+    score: clamp01(score),
+    note: `${base.note}|heuristic_delta|predictive`,
+    predictive: {
+      signal_clarity: Math.round(predictive.signal_clarity * 1000) / 1000,
+      trajectory_trend: Math.round(predictive.trajectory_trend * 1000) / 1000,
+      frontier_touched: predictive.frontier_touched,
+    },
+  };
 }
 
 function buildConfidenceEdgeEvent({ signalKey, signals, geneId, geneCategory, outcomeEventId, halfLifeDays }) {
@@ -690,6 +897,7 @@ function recordOutcomeFromState({ signals, observations }) {
     currentHasError,
     baselineObserved: last.baseline_observed || null,
     currentObserved: observations || null,
+    signals,
   });
   const ts = nowIso();
   const errsig = extractErrorSignatureFromSignals(signals);
@@ -726,6 +934,7 @@ function recordOutcomeFromState({ signals, observations }) {
       score: inferred.score,
       note: inferred.note,
       observed: { current_signals: Array.isArray(signals) ? signals : [] },
+      predictive: inferred.predictive || null,
     },
     confidence: {
       // This is an interpretable, decayed success estimate derived from outcomes; aggregation is computed at read-time.
@@ -760,6 +969,30 @@ function recordOutcomeFromState({ signals, observations }) {
         halfLifeDays: 45,
       });
       appendJsonl(memoryGraphPath(), geneEv);
+    }
+    // TTT-inspired: record confidence edges for all chunk genes (shared outcome)
+    if (Array.isArray(last.chunk_gene_ids)) {
+      for (const cgId of last.chunk_gene_ids) {
+        if (!cgId || cgId === last.gene_id) continue;
+        try {
+          const chunkEdgeEv = buildConfidenceEdgeEvent({
+            signalKey: String(last.signal_key || '(none)'),
+            signals: Array.isArray(last.signals) ? last.signals : [],
+            geneId: String(cgId),
+            geneCategory: null,
+            outcomeEventId: ev.id,
+            halfLifeDays: 30,
+          });
+          appendJsonl(memoryGraphPath(), chunkEdgeEv);
+          const chunkGeneEv = buildGeneOutcomeConfidenceEvent({
+            geneId: String(cgId),
+            geneCategory: null,
+            outcomeEventId: ev.id,
+            halfLifeDays: 45,
+          });
+          appendJsonl(memoryGraphPath(), chunkGeneEv);
+        } catch (_) {}
+      }
     }
   } catch (e) {}
 
@@ -814,5 +1047,9 @@ module.exports = {
   recordAttempt,
   recordOutcomeFromState,
   recordExternalCandidate,
+  computePredictiveBoost,
+  checkEpochBoundary,
+  resetMemoryPreferences,
+  readCurrentEpoch,
 };
 
